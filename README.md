@@ -18,6 +18,7 @@ src/
   decision.py   exclusivity, expected-F0.5 set choice, official metric (macro F0.5)
   train.py      end-to-end training + validation report
   predict.py    test prediction -> output/matching_results.tsv + candidate_pairs.tsv
+  audit.py      test-vs-validation prediction audit with examples (no labels needed)
 tests/
   test_normalize.py  regression tests on real noise patterns
   make_synthetic.py  small synthetic dataset for pipeline smoke tests

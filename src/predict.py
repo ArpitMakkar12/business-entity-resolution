@@ -39,7 +39,7 @@ def check_outputs(match: pl.DataFrame, cand: pl.DataFrame, s1_ids: pl.Series,
             problems.append(f"{name}: rows {df.height:,} vs S1 {s1_ids.len():,} (or duplicates)")
         if not df[G].is_in(s1_ids.implode()).all():
             problems.append(f"{name}: unknown S1 ids")
-        ids = df["ids"].explode().drop_nulls()
+        ids = df.select(pl.col("ids").list.explode()).drop_nulls()["ids"]
         if not ids.is_in(pool_ids.implode()).all():
             problems.append(f"{name}: ids not in test S2/S3")
         if (df["ids"].list.len() != df["ids"].list.unique().list.len()).any():
@@ -59,6 +59,10 @@ def main():
     ap.add_argument("--data-dir", default=str(DATA_DIR))
     ap.add_argument("--validator", default=None, help="path to utils/validate_submission.py")
     ap.add_argument("--force", action="store_true", help="recompute cached stages")
+    ap.add_argument("--tau", type=float, default=None,
+                    help="override the tuned rule with a plain probability threshold")
+    ap.add_argument("--blank-country", nargs="*", default=[],
+                    help="PROBE ONLY: predict no matches for these countries (measures their score)")
     args = ap.parse_args()
 
     norm_dir, mdir, out = Path(args.norm_dir), Path(args.model_dir), Path(args.out_dir)
@@ -92,9 +96,13 @@ def main():
         pl.concat(parts).write_parquet(scored_path)
     scored = pl.read_parquet(scored_path)
 
-    log(f"decision rule: {params['decision']}")
+    rule = params["decision"] if args.tau is None else {"rule": "threshold", "tau": args.tau}
+    log(f"decision rule: {rule}")
+    if args.blank_country:
+        log(f"PROBE: no matches predicted for {args.blank_country}")
+        scored = scored.filter(~pl.col("country").is_in(args.blank_country))
     s1_ids = s1["entity_id"]
-    match = to_lists(decide(scored, params["decision"]), s1_ids.to_list())
+    match = to_lists(decide(scored, rule), s1_ids.to_list())
     cand_lists = to_lists(cands.select(G, "cand_id"), s1_ids.to_list())
 
     problems = check_outputs(match, cand_lists, s1_ids, pool["entity_id"])
