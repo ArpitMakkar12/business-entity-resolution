@@ -58,7 +58,8 @@ def main():
     ap.add_argument("--data-dir", default=None, help="challenge dataset dir (for ground truth)")
     ap.add_argument("--n-train", type=int, default=300_000)
     ap.add_argument("--n-valid", type=int, default=100_000)
-    ap.add_argument("--top-k", type=int, default=10)
+    ap.add_argument("--top-k", type=int, default=16,
+                    help="final candidates per S1 per source pair of lists (union 8+8)")
     ap.add_argument("--rounds", type=int, default=1000)
     ap.add_argument("--force", action="store_true", help="recompute cached stages")
     args = ap.parse_args()

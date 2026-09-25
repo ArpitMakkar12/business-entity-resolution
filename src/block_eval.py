@@ -37,8 +37,8 @@ VARIANTS = {
     "v2 1/df, top20":                    _v(DEFAULT_CAPS, "inv", "none", 0, 20),
     "v3 1/df, rscore 30->10":            _v(DEFAULT_CAPS, "inv", "rscore", 30, 10),
     "v4 1/df, combo 30->10":             _v(DEFAULT_CAPS, "inv", "combo", 30, 10),
-    "v5 1/df, union 5+5 of 30 (default)": _v(DEFAULT_CAPS, "inv", "union", 30, 10),
-    "v6 1/df, union 8+8 of 50":          _v(DEFAULT_CAPS, "inv", "union", 50, 16),
+    "v5 1/df, union 5+5 of 30": _v(DEFAULT_CAPS, "inv", "union", 30, 10),
+    "v6 1/df, union 8+8 of 50 (default)":  _v(DEFAULT_CAPS, "inv", "union", 50, 16),
     "v7 big caps, union 5+5 of 30":      _v(BIG_CAPS, "inv", "union", 30, 10),
 }
 

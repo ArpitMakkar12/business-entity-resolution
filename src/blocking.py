@@ -41,7 +41,8 @@ DEFAULT_CAPS = {0: 300, 1: 500, 2: 500, 3: 500, 4: 200, 5: 300, 6: 500, 7: 500}
 # rerank: "none"  -> top final_k by blocking score
 #         "combo" -> top final_k by rscore + min(bscore, 2) among the best retrieve_k
 #         "union" -> best final_k//2 by bscore  UNION  best final_k//2 by rscore
-DEFAULT_CFG = {"caps": DEFAULT_CAPS, "weight": "inv", "retrieve_k": 30, "final_k": 10,
+# chosen with src.block_eval on real training data: recall 0.9647 at 24.8 candidates/S1
+DEFAULT_CFG = {"caps": DEFAULT_CAPS, "weight": "inv", "retrieve_k": 50, "final_k": 16,
                "rerank": "union"}
 MAX_NAME_TOKENS, MAX_ADDR_WORDS, MAX_NUMBERS = 4, 8, 3
 
