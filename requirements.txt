@@ -1,0 +1,10 @@
+# Phase 1 (EDA + baseline). Exact versions get pinned from the Colab
+# environment (`pip freeze`) before the final submission package.
+polars>=1.0
+pyarrow>=15.0
+numpy>=1.26
+psutil>=5.9
+rapidfuzz>=3.6        # MIT  - string similarity features
+scikit-learn>=1.4     # BSD  - TF-IDF, calibration, metrics
+lightgbm>=4.3         # MIT  - pair classifier
+tqdm>=4.66

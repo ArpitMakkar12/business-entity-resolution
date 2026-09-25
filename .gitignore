@@ -1,0 +1,17 @@
+# Never commit challenge data or large artefacts
+dataset/
+work/
+output/
+*.tsv
+*.parquet
+*.zip
+*.npy
+*.faiss
+*.txt.gz
+# Python / tooling
+__pycache__/
+*.pyc
+.venv/
+.ipynb_checkpoints/
+# re-allow the requirements file
+!requirements.txt
