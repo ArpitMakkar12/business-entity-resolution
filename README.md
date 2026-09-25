@@ -10,6 +10,9 @@ src/
   config.py     paths (overridable via BER_DATA_DIR / BER_WORK_DIR / BER_OUTPUT_DIR)
   io_utils.py   TSV readers and submission writers
   eda.py        exploratory analysis report
+  normalize.py  canonical name/address views (romanisation, legal forms, numbers, states)
+tests/
+  test_normalize.py  regression tests on real noise patterns
 notebooks/
   00_colab_bootstrap.ipynb   Colab setup: data, code, dependencies, runs
 ```
@@ -30,6 +33,8 @@ Expected data layout (the challenge's `dataset/` folder):
 ```bash
 python -m src.eda --out-dir work/eda                          # full data
 python -m src.eda --out-dir work/eda_sample --max-rows 300000 # quick sample
+python -m src.normalize                    # -> work/normalized/{train,test}_s{1,2,3}.parquet
+python -m tests.test_normalize             # regression tests
 ```
 
 ## Compliance
