@@ -14,6 +14,13 @@ Variants (probability set to 0 when the rule fires):
   group            conflicting pairs, only when the same S1 already has a
                    likely match (p >= 0.5) that shares a house number with it
   group_or_p95     group rule, or any conflicting pair with p < 0.95
+  sibling          conflicting pair whose (different) house number is shared by
+                   at least one other candidate of the same S1 (a sibling
+                   business with its own duplicates) while the S1 already has a
+                   likely match with its own number; lone records with a typo'd
+                   number are kept
+  sibling_or_p90   sibling rule, or any conflicting pair with p < 0.90
+  sibling_or_p95   sibling rule, or any conflicting pair with p < 0.95
 """
 import polars as pl
 
@@ -26,6 +33,9 @@ VARIANTS = {
     "conflict_p90": {"p_max": 0.90, "group": False},
     "group": {"p_max": -1.0, "group": True},
     "group_or_p95": {"p_max": 0.95, "group": True},
+    "sibling": {"p_max": -1.0, "group": False, "sibling": True},
+    "sibling_or_p90": {"p_max": 0.90, "group": False, "sibling": True},
+    "sibling_or_p95": {"p_max": 0.95, "group": False, "sibling": True},
 }
 
 
@@ -44,7 +54,11 @@ def number_flags(scored: pl.DataFrame, s1_nums: pl.DataFrame, pool_nums: pl.Data
     hi = hi.with_columns((has1 & has2 & (inter.fill_null(0) == 0)).alias("conflict"),
                          (inter.fill_null(0) > 0).alias("num_match"))
     hi = hi.with_columns(((pl.col("p") >= 0.5) & pl.col("num_match")).any().over(G)
-                         .alias("grp_has_match"))
+                         .alias("grp_has_match"),
+                         pl.col("nums2").list.first().alias("_n2"))
+    # size of the cluster of candidates (same S1) sharing this candidate's first number
+    hi = hi.with_columns(pl.when(pl.col("_n2").is_not_null())
+                         .then(pl.len().over([G, "_n2"])).otherwise(0).alias("num_cluster"))
     return hi, lo
 
 
@@ -58,6 +72,8 @@ def apply_post(scored: pl.DataFrame, s1_nums: pl.DataFrame, pool_nums: pl.DataFr
     fire = pl.col("conflict") & (pl.col("p") < cfg["p_max"])
     if cfg["group"]:
         fire = fire | (pl.col("conflict") & pl.col("grp_has_match"))
+    if cfg.get("sibling"):
+        fire = fire | (pl.col("conflict") & pl.col("grp_has_match") & (pl.col("num_cluster") >= 2))
     hi = hi.with_columns(pl.when(fire).then(0.0).otherwise(pl.col("p")).alias("p"))
     return pl.concat([hi.select(scored.columns), lo.select(scored.columns)])
 
