@@ -12,7 +12,8 @@ src/
   eda.py        exploratory analysis report
   normalize.py  canonical name/address views (romanisation, legal forms, numbers, states)
   aliases.py    romanised-token -> English-token aliases learned from training pairs
-  blocking.py   multi-key inverted-index candidate generation (per country)
+  blocking.py   multi-key inverted index (1/block-size weights) + similarity re-rank
+  block_eval.py blocking recall/cost comparison of configurations on training data
   features.py   pair features (rapidfuzz similarities, token/IDF overlap, address, context)
   decision.py   exclusivity, expected-F0.5 set choice, official metric (macro F0.5)
   train.py      end-to-end training + validation report
@@ -44,6 +45,7 @@ python -m src.eda --out-dir work/eda                          # full data
 python -m src.eda --out-dir work/eda_sample --max-rows 300000 # quick sample
 python -m src.normalize                    # -> work/normalized/{train,test}_s{1,2,3}.parquet
 python -m tests.test_normalize             # regression tests
+python -m src.block_eval                   # blocking recall report
 python -m src.train                        # -> work/model/ (model.txt, params.json, report.json)
 python -m src.predict --validator tools/validate_submission.py   # -> work/output/*.tsv
 ```

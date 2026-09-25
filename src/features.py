@@ -187,8 +187,8 @@ def compute_features_chunked(pairs: pl.DataFrame, s1: pl.DataFrame, pool: pl.Dat
     ids = pairs.select("source1_entity_id").unique(maintain_order=True)["source1_entity_id"]
     for i in range(0, len(ids), s1_per_chunk):
         chunk_ids = ids.slice(i, s1_per_chunk)
-        part = pairs.filter(pl.col("source1_entity_id").is_in(chunk_ids))
-        s1c = s1.filter(pl.col("entity_id").is_in(chunk_ids))
-        poolc = pool.filter(pl.col("entity_id").is_in(part["cand_id"].unique()))
+        part = pairs.filter(pl.col("source1_entity_id").is_in(chunk_ids.implode()))
+        s1c = s1.filter(pl.col("entity_id").is_in(chunk_ids.implode()))
+        poolc = pool.filter(pl.col("entity_id").is_in(part["cand_id"].unique().implode()))
         yield compute_features(part, s1c, poolc, idf)
         log(f"  features: {min(i + s1_per_chunk, len(ids)):,}/{len(ids):,} S1 records")

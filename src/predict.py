@@ -37,10 +37,10 @@ def check_outputs(match: pl.DataFrame, cand: pl.DataFrame, s1_ids: pl.Series,
     for name, df in (("matching", match), ("candidates", cand)):
         if df.height != s1_ids.len() or df[G].n_unique() != df.height:
             problems.append(f"{name}: rows {df.height:,} vs S1 {s1_ids.len():,} (or duplicates)")
-        if not df[G].is_in(s1_ids).all():
+        if not df[G].is_in(s1_ids.implode()).all():
             problems.append(f"{name}: unknown S1 ids")
         ids = df["ids"].explode().drop_nulls()
-        if not ids.is_in(pool_ids).all():
+        if not ids.is_in(pool_ids.implode()).all():
             problems.append(f"{name}: ids not in test S2/S3")
         if (df["ids"].list.len() != df["ids"].list.unique().list.len()).any():
             problems.append(f"{name}: duplicate ids inside a list")

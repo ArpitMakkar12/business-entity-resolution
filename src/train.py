@@ -86,7 +86,7 @@ def main():
     n_tr = min(args.n_train, int(len(ids) * 0.8))
     n_va = min(args.n_valid, len(ids) - n_tr)
     train_ids, valid_ids = ids[:n_tr], ids[n_tr:n_tr + n_va]
-    query = s1.filter(pl.col("entity_id").is_in(pl.concat([train_ids, valid_ids])))
+    query = s1.filter(pl.col("entity_id").is_in(pl.concat([train_ids, valid_ids]).implode()))
     log(f"sampled {n_tr:,} train + {n_va:,} valid S1 entities")
 
     # 2. blocking ------------------------------------------------------------
@@ -110,7 +110,7 @@ def main():
             on=["source1_entity_id", "cand_id"], how="left").with_columns(pl.col("y").fill_null(0))
         feats.write_parquet(feat_path)
     feats = pl.read_parquet(feat_path)
-    is_tr = pl.col("source1_entity_id").is_in(train_ids)
+    is_tr = pl.col("source1_entity_id").is_in(train_ids.implode())
     tr, va = feats.filter(is_tr), feats.filter(~is_tr)
     log(f"pairs: train {tr.height:,} (pos {tr['y'].mean():.3f}), valid {va.height:,}")
 
@@ -127,7 +127,7 @@ def main():
     # 5. decision rule + validation report -----------------------------------
     scored = va.select(G, "cand_id", "country", "y").with_columns(
         pl.Series("p", model.predict(va.select(FEATURES).to_numpy())))
-    truth = gt.filter(pl.col(G).is_in(valid_ids))
+    truth = gt.filter(pl.col(G).is_in(valid_ids.implode()))
     log("tuning decision rule on validation (macro F0.5)")
     params = tune_decision(scored, truth, log=log)
     per = f05_per_entity(to_lists(decide(scored, params), truth[G].to_list()), truth)
