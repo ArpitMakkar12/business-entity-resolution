@@ -11,8 +11,17 @@ src/
   io_utils.py   TSV readers and submission writers
   eda.py        exploratory analysis report
   normalize.py  canonical name/address views (romanisation, legal forms, numbers, states)
+  aliases.py    romanised-token -> English-token aliases learned from training pairs
+  blocking.py   multi-key inverted-index candidate generation (per country)
+  features.py   pair features (rapidfuzz similarities, token/IDF overlap, address, context)
+  decision.py   exclusivity, expected-F0.5 set choice, official metric (macro F0.5)
+  train.py      end-to-end training + validation report
+  predict.py    test prediction -> output/matching_results.tsv + candidate_pairs.tsv
 tests/
   test_normalize.py  regression tests on real noise patterns
+  make_synthetic.py  small synthetic dataset for pipeline smoke tests
+tools/
+  validate_submission.py  organisers' validator (unchanged copy)
 notebooks/
   00_colab_bootstrap.ipynb   Colab setup: data, code, dependencies, runs
 ```
@@ -35,6 +44,15 @@ python -m src.eda --out-dir work/eda                          # full data
 python -m src.eda --out-dir work/eda_sample --max-rows 300000 # quick sample
 python -m src.normalize                    # -> work/normalized/{train,test}_s{1,2,3}.parquet
 python -m tests.test_normalize             # regression tests
+python -m src.train                        # -> work/model/ (model.txt, params.json, report.json)
+python -m src.predict --validator tools/validate_submission.py   # -> work/output/*.tsv
+```
+
+Smoke test on synthetic data (a few seconds):
+```bash
+python -m tests.make_synthetic --out /tmp/synth
+export BER_DATA_DIR=/tmp/synth BER_WORK_DIR=/tmp/synth_work
+python -m src.normalize && python -m src.train --n-train 3000 --n-valid 1500 && python -m src.predict
 ```
 
 ## Compliance
