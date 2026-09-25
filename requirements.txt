@@ -1,10 +1,9 @@
-# Phase 1 (EDA + baseline). Exact versions get pinned from the Colab
-# environment (`pip freeze`) before the final submission package.
-polars>=1.20          # MIT  - dataframes (str.normalize needs >=1.20)
-pyarrow>=15.0
+# Pinned to the versions the pipeline is tested with.
+# polars must NOT be 1.35.x: it mis-reads list columns of sliced frames
+# (the code avoids that pattern too, but pin anyway).
+polars==1.44.2        # MIT  - dataframes
 numpy>=1.26
 psutil>=5.9
-rapidfuzz>=3.6        # MIT  - string similarity features
-scikit-learn>=1.4     # BSD  - TF-IDF, calibration, metrics
-lightgbm>=4.3         # MIT  - pair classifier
+rapidfuzz==3.14.6     # MIT  - string similarity
+lightgbm==4.7.0       # MIT  - pair classifier
 tqdm>=4.66

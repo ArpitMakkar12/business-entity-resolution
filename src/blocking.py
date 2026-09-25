@@ -46,8 +46,9 @@ DEFAULT_CFG = {"caps": DEFAULT_CAPS, "weight": "inv", "retrieve_k": 30, "final_k
 MAX_NAME_TOKENS, MAX_ADDR_WORDS, MAX_NUMBERS = 4, 8, 3
 
 
-def record_keys(df: pl.DataFrame) -> pl.DataFrame:
-    """Blocking keys for records with an ``idx`` column -> (idx, key:u64, t:u8)."""
+def _token_tables(df: pl.DataFrame):
+    """Flatten the token lists of records with an ``idx`` column (whole frame,
+    never on a slice) -> (name tokens, address words, numbers, concat names)."""
     b = df.select(
         "idx",
         pl.col("name_core_tokens").list.eval(pl.element().filter(
@@ -62,7 +63,12 @@ def record_keys(df: pl.DataFrame) -> pl.DataFrame:
     nt = b.select("idx", "nt").explode("nt").drop_nulls("nt")
     aw = b.select("idx", "aw").explode("aw").drop_nulls("aw")
     nu = b.select("idx", "nu").explode("nu").drop_nulls("nu")
+    cc = b.select("idx", "name_concat").filter(pl.col("name_concat").str.len_chars() >= 4)
+    return nt, aw, nu, cc
 
+
+def _keys_from_tokens(nt, aw, nu, cc) -> pl.DataFrame:
+    """Build the eight key types from flat token tables -> (idx, key:u64, t:u8)."""
     def keys(frame, parts, t):
         return frame.select("idx", pl.concat_str([pl.lit(KEY_NAMES[t] + "|")] + parts)
                             .alias("k"), pl.lit(t, pl.UInt8).alias("t"))
@@ -76,7 +82,7 @@ def record_keys(df: pl.DataFrame) -> pl.DataFrame:
         keys(nu.join(aw, on="idx"), [pl.col("nu"), sep, pl.col("aw")], 3),
         keys(aw.join(aw, on="idx", suffix="2").filter(pl.col("aw") < pl.col("aw2")),
              [pl.col("aw"), sep, pl.col("aw2")], 4),
-        keys(b.filter(pl.col("name_concat").str.len_chars() >= 4), [pl.col("name_concat")], 5),
+        keys(cc, [pl.col("name_concat")], 5),
         keys(nu.join(nt, on="idx"), [pl.col("nu"), sep, pl.col("nt")], 6),
         keys(nu.join(nu, on="idx", suffix="2").filter(pl.col("nu") < pl.col("nu2")),
              [pl.col("nu"), sep, pl.col("nu2")], 7),
@@ -84,8 +90,26 @@ def record_keys(df: pl.DataFrame) -> pl.DataFrame:
     return pl.concat(frames).select("idx", pl.col("k").hash(seed=11).alias("key"), "t")
 
 
+def record_keys(df: pl.DataFrame) -> pl.DataFrame:
+    """Blocking keys for records with an ``idx`` column -> (idx, key:u64, t:u8)."""
+    return _keys_from_tokens(*_token_tables(df))
+
+
 def keys_chunked(df: pl.DataFrame, chunk: int = 1_000_000) -> pl.DataFrame:
-    return pl.concat([record_keys(df.slice(i, chunk)) for i in range(0, df.height, chunk)])
+    """record_keys for large frames, bounded memory.
+
+    Token lists are flattened once on the whole frame; only the flat token
+    tables are then processed in idx ranges. (Slicing list columns directly is
+    unsafe: polars 1.35 mis-reads list columns of a sliced frame and silently
+    built keys from the wrong rows.)
+    """
+    nt, aw, nu, cc = _token_tables(df)
+    lo, hi = int(df["idx"].min()), int(df["idx"].max())
+    parts = []
+    for start in range(lo, hi + 1, chunk):
+        rng = pl.col("idx").is_between(start, start + chunk - 1)
+        parts.append(_keys_from_tokens(nt.filter(rng), aw.filter(rng), nu.filter(rng), cc.filter(rng)))
+    return pl.concat(parts)
 
 
 def pool_key_table(p: pl.DataFrame, max_cap: int) -> pl.DataFrame:
