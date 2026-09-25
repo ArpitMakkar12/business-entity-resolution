@@ -130,7 +130,7 @@ def join_stats(gt, pairs, s1, s2, s3, partial: bool) -> dict:
         .agg(pl.len().alias("rows"), pl.col("is_matched").mean().alias("matched_share"))
         .sort("src", "country")
     )
-    coverage = {f"{r['src']}|{r['country']}": {"rows": r["rows"],
+    coverage = {f"{r['src']} / {r['country']}": {"rows": r["rows"],
                 "pct_matched_to_some_s1": _pct(r["matched_share"])}
                 for r in cov.iter_rows(named=True)}
 
@@ -258,7 +258,7 @@ def main():
                 n1 = a.filter(pl.col("country") == country).height
                 n23 = (b.filter(pl.col("country") == country).height
                        + c.filter(pl.col("country") == country).height)
-                ratio[f"{split}|{country}"] = {"s1": n1, "s2+s3": n23,
+                ratio[f"{split} / {country}"] = {"s1": n1, "s2+s3": n23,
                                                "s2s3_per_s1": round(n23 / max(n1, 1), 3)}
         report["test_ratios"] = {"by_split_country": ratio}
 
