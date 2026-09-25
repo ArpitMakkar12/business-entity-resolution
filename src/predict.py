@@ -61,6 +61,8 @@ def main():
     ap.add_argument("--force", action="store_true", help="recompute cached stages")
     ap.add_argument("--tau", type=float, default=None,
                     help="override the tuned rule with a plain probability threshold")
+    ap.add_argument("--post", default="none",
+                    help="house-number conflict rule from src.postprocess.VARIANTS (e.g. group)")
     ap.add_argument("--blank-country", nargs="*", default=[],
                     help="PROBE ONLY: predict no matches for these countries (measures their score)")
     args = ap.parse_args()
@@ -98,6 +100,11 @@ def main():
 
     rule = params["decision"] if args.tau is None else {"rule": "threshold", "tau": args.tau}
     log(f"decision rule: {rule}")
+    if args.post != "none":
+        from src.postprocess import apply_post, numbers_frame
+        log(f"post-processing: {args.post}")
+        scored = apply_post(scored, numbers_frame(s1, G, "nums1"),
+                            numbers_frame(pool, "cand_id", "nums2"), args.post)
     if args.blank_country:
         log(f"PROBE: no matches predicted for {args.blank_country}")
         scored = scored.filter(~pl.col("country").is_in(args.blank_country))
