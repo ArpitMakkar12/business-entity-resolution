@@ -19,7 +19,7 @@ from pathlib import Path
 import polars as pl
 
 from src.aliases import apply_aliases, learn_aliases, load_aliases
-from src.blocking import (DEFAULT_CAPS, keys_chunked, pool_key_table, score_rows,
+from src.blocking import (DEFAULT_CAPS, KEY_NAMES, keys_chunked, score_rows,
                           select_final)
 from src.config import SEED, WORK_DIR, train_paths
 from src.io_utils import explode_ground_truth, read_ground_truth
@@ -60,13 +60,17 @@ def main():
 
     results = {v: [0, 0, 0] for v in VARIANTS}   # found, candidates, queries
     cover = {"any key (cap 2000)": 0, "default caps": 0}
-    total, missed_frames = 0, []
+    total, missed_frames, rarity = 0, [], []
     for country in sorted(queries["country"].unique().to_list()):
         t0 = time.time()
         q = queries.filter(pl.col("country") == country).with_row_index("idx")
         p = pool.filter(pl.col("country") == country).with_row_index("idx")
-        pk = pool_key_table(p, 2000)
-        rows = keys_chunked(q).drop("t").join(pk, on="key")
+        pk_all = keys_chunked(p)
+        dfs = pk_all.group_by("key").agg(pl.len().cast(pl.UInt32).alias("df"))
+        pk = (pk_all.join(dfs.filter(pl.col("df") <= 2000), on="key")
+              .select(pl.col("idx").alias("pidx"), "key", "t", "df"))
+        qk = keys_chunked(q)
+        rows = qk.drop("t").join(pk, on="key")
         truth = (gt_pairs.join(q.select("idx", pl.col("entity_id").alias("source1_entity_id")),
                                on="source1_entity_id")
                  .join(p.select(pl.col("idx").alias("pidx"), pl.col("entity_id").alias("matched_id")),
@@ -83,7 +87,15 @@ def main():
             results[name][0] += truth.join(sc, on=["idx", "pidx"], how="semi").height
             results[name][1] += sc.height
             results[name][2] += q.height
+        # rarity of the rarest key shared by each true pair (no cap at all)
+        shared = (truth.join(qk, on="idx")
+                  .join(pk_all.select(pl.col("idx").alias("pidx"), "key"), on=["pidx", "key"])
+                  .join(dfs, on="key"))
+        best = (shared.sort("df").group_by("idx", "pidx", maintain_order=True)
+                .agg(pl.col("df").first().alias("min_df"), pl.col("t").first().alias("min_t")))
+        rarity.append(truth.join(best, on=["idx", "pidx"], how="left").select("min_df", "min_t"))
         miss = truth.join(rows.select("idx", "pidx").unique(), on=["idx", "pidx"], how="anti")
+        miss = miss.join(best, on=["idx", "pidx"], how="left")
         missed_frames.append(
             miss.join(q.select("idx", pl.col("business_name").alias("s1_name"),
                                pl.col("business_address").alias("s1_addr")), on="idx")
@@ -92,6 +104,7 @@ def main():
             .with_columns(pl.lit(country).alias("country")).drop("idx", "pidx"))
         log(f"[{country}] {q.height:,} queries, {truth.height:,} true pairs, "
             f"{rows.height / max(q.height, 1):,.0f} key rows/query, {time.time() - t0:.0f}s")
+        del pk_all, pk, rows, shared
 
     print(f"\nTrue pairs in sample: {total:,}")
     for k, v in cover.items():
@@ -99,10 +112,22 @@ def main():
     print("\nconfiguration                       recall   cands/query")
     for name, (found, n_c, n_q) in results.items():
         print(f"  {name:34s} {found / total:.4f}   {n_c / max(n_q, 1):5.1f}")
+    rar = pl.concat(rarity)
+    print("\nRarest key shared by each true pair (block size in the pool, no cap):")
+    for label, cond in (("no shared key at all", pl.col("min_df").is_null()),
+                        ("<= 300", pl.col("min_df") <= 300),
+                        ("301 - 2,000", pl.col("min_df").is_between(301, 2000)),
+                        ("2,001 - 20,000", pl.col("min_df").is_between(2001, 20000)),
+                        ("> 20,000", pl.col("min_df") > 20000)):
+        print(f"  {label:22s} {rar.filter(cond).height / rar.height:.4f}")
+    print("  rarest shared key type:", {KEY_NAMES[t]: round(n / rar.height, 4) for t, n in
+          rar.drop_nulls("min_t").group_by("min_t").len().sort("min_t").iter_rows()})
     missed = pl.concat(missed_frames)
-    print(f"\n{missed.height:,} true pairs share NO key at all; examples:")
-    with pl.Config(tbl_rows=25, fmt_str_lengths=55, tbl_width_chars=240):
-        print(missed.sample(n=min(25, missed.height), seed=SEED))
+    print(f"\n{missed.height:,} true pairs share no key with block size <= 2000; examples:")
+    with pl.Config(tbl_rows=30, fmt_str_lengths=38, tbl_width_chars=250):
+        print(missed.sample(n=min(30, missed.height), seed=SEED)
+              .with_columns(pl.col("min_t").replace_strict(KEY_NAMES, default=None).alias("min_t"))
+              .select("country", "s1_name", "cand_name", "s1_addr", "cand_addr", "min_df", "min_t"))
 
 
 if __name__ == "__main__":
