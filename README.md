@@ -22,6 +22,7 @@ src/
   siblings.py   synthetic 'sibling business' hard negatives injected into the training pool
   postprocess.py house-number conflict rules against sibling-business false merges
   tune_post.py  validation cost / test effect of each post-processing rule
+  error_analysis.py where validation F0.5 is lost (blocking misses, false merges, ...) with examples
 tests/
   test_normalize.py  regression tests on real noise patterns
   make_synthetic.py  small synthetic dataset for pipeline smoke tests (incl. sibling distractors)
