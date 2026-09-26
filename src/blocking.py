@@ -12,6 +12,9 @@ country label. Keys (after normalisation + aliases):
   C  concatenated name                  handles and domains ("@alikadavis")
   B  house number x name token          same number + name, reworded address
   M  pair of house numbers              multi-number Indian addresses ("1206/1207")
+  T  triple of name tokens               names built from common words ("Urgent Care
+                                        Physicians") where single tokens and pairs are
+                                        too frequent, esp. for records with no address
 
 Scoring: each shared key adds ``type_weight / block_size`` (block_size = number
 of pool records carrying that key), so rare shared evidence dominates and the
@@ -35,15 +38,32 @@ from src.config import N_JOBS
 from src.normalize import ADDRESS_CANON, NAME_STOPWORDS
 
 STREET_WORDS = sorted(set(ADDRESS_CANON.values()) | set(ADDRESS_CANON.keys()))
-KEY_NAMES = {0: "N", 1: "P", 2: "A", 3: "U", 4: "W", 5: "C", 6: "B", 7: "M"}
-TYPE_WEIGHT = {0: 1.0, 1: 1.5, 2: 2.0, 3: 2.0, 4: 1.0, 5: 2.0, 6: 2.0, 7: 2.0}
-DEFAULT_CAPS = {0: 300, 1: 500, 2: 500, 3: 500, 4: 200, 5: 300, 6: 500, 7: 500}
+KEY_NAMES = {0: "N", 1: "P", 2: "A", 3: "U", 4: "W", 5: "C", 6: "B", 7: "M", 8: "T"}
+TYPE_WEIGHT = {0: 1.0, 1: 1.5, 2: 2.0, 3: 2.0, 4: 1.0, 5: 2.0, 6: 2.0, 7: 2.0, 8: 2.5}
+DEFAULT_CAPS = {0: 300, 1: 500, 2: 500, 3: 500, 4: 200, 5: 300, 6: 500, 7: 500, 8: 500}
 # rerank: "none"  -> top final_k by blocking score
 #         "combo" -> top final_k by rscore + min(bscore, 2) among the best retrieve_k
 #         "union" -> best final_k//2 by bscore  UNION  best final_k//2 by rscore
+#         "union3"-> best k_b by bscore UNION best k_r by rscore UNION best k_n by name only
 # chosen with src.block_eval on real training data: recall 0.9647 at 24.8 candidates/S1
 DEFAULT_CFG = {"caps": DEFAULT_CAPS, "weight": "inv", "retrieve_k": 50, "final_k": 16,
                "rerank": "union"}
+_NO_T = {**DEFAULT_CAPS, 8: 0}
+# Named blocking configurations (compared with src.block_eval; chosen with --blocking)
+PRESETS = {
+    "v6": {"caps": _NO_T, "weight": "inv", "retrieve_k": 50, "final_k": 16, "rerank": "union"},
+    "v8": {"caps": DEFAULT_CAPS, "weight": "inv", "retrieve_k": 50, "final_k": 16, "rerank": "union"},
+    "v9": {"caps": DEFAULT_CAPS, "weight": "inv", "retrieve_k": 50, "final_k": 0, "rerank": "union3",
+           "k_b": 8, "k_r": 8, "k_n": 4},
+    "v10": {"caps": DEFAULT_CAPS, "weight": "inv", "retrieve_k": 80, "final_k": 0, "rerank": "union3",
+            "k_b": 8, "k_r": 8, "k_n": 4},
+    "v11": {"caps": DEFAULT_CAPS, "weight": "inv", "retrieve_k": 80, "final_k": 0, "rerank": "union3",
+            "k_b": 6, "k_r": 6, "k_n": 4},
+    "v12": {"caps": DEFAULT_CAPS, "weight": "inv", "retrieve_k": 80, "final_k": 0, "rerank": "union3",
+            "k_b": 8, "k_r": 8, "k_n": 8},
+    "v13": {"caps": DEFAULT_CAPS, "weight": "inv", "retrieve_k": 80, "final_k": 0, "rerank": "union3",
+            "k_b": 5, "k_r": 5, "k_n": 3},
+}
 MAX_NAME_TOKENS, MAX_ADDR_WORDS, MAX_NUMBERS = 4, 8, 3
 
 
@@ -87,6 +107,9 @@ def _keys_from_tokens(nt, aw, nu, cc) -> pl.DataFrame:
         keys(nu.join(nt, on="idx"), [pl.col("nu"), sep, pl.col("nt")], 6),
         keys(nu.join(nu, on="idx", suffix="2").filter(pl.col("nu") < pl.col("nu2")),
              [pl.col("nu"), sep, pl.col("nu2")], 7),
+        keys(nt.join(nt, on="idx", suffix="2").filter(pl.col("nt") < pl.col("nt2"))
+             .join(nt.rename({"nt": "nt3"}), on="idx").filter(pl.col("nt2") < pl.col("nt3")),
+             [pl.col("nt"), sep, pl.col("nt2"), sep, pl.col("nt3")], 8),
     ]
     return pl.concat(frames).select("idx", pl.col("k").hash(seed=11).alias("key"), "t")
 
@@ -154,7 +177,8 @@ def rerank_score(pairs: pl.DataFrame, q: pl.DataFrame, p: pl.DataFrame) -> pl.Da
     ad = cpdist(d["a1"].to_list(), d["a2"].to_list(), scorer=fuzz.token_set_ratio,
                 workers=N_JOBS, dtype=np.float32)
     return d.drop("n1", "n2", "a1", "a2").with_columns(
-        pl.Series("rscore", (ns + ad) / np.float32(100.0)))
+        pl.Series("rscore", (ns + ad) / np.float32(100.0)),
+        pl.Series("nscore", ns / np.float32(100.0)))
 
 
 def select_final(scored: pl.DataFrame, q: pl.DataFrame, p: pl.DataFrame, cfg: dict) -> pl.DataFrame:
@@ -171,6 +195,13 @@ def select_final(scored: pl.DataFrame, q: pl.DataFrame, p: pl.DataFrame, cfg: di
         a = top_per_source(pre, "bscore", half)
         b = top_per_source(pre, "rscore", half)
         return pl.concat([a, b]).unique(["idx", "pidx"], keep="first")
+    if mode == "union3":
+        # best k_b by blocking score, best k_r by name+address similarity and best k_n
+        # by name similarity alone (records with an empty/garbled address are
+        # otherwise always outranked by other businesses at the S1's address)
+        parts = [top_per_source(pre, "bscore", cfg["k_b"]), top_per_source(pre, "rscore", cfg["k_r"]),
+                 top_per_source(pre, "nscore", cfg["k_n"])]
+        return pl.concat(parts).unique(["idx", "pidx"], keep="first")
     return top_per_source(pre, "rscore", k)                      # "rscore"
 
 

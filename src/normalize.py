@@ -303,6 +303,9 @@ def _address_frame(df: pl.DataFrame, addr_col: str) -> pl.DataFrame:
              .list.eval(pl.element().str.replace_all(r"[^a-z ]", "").str.strip_chars()
                         .replace_strict(_STATE_LOOKUP, default=None))
              .list.drop_nulls().list.unique(maintain_order=True))
+    f = f.str.replace_many([" first ", " second ", " third ", " fourth ", " fifth ", " sixth ",
+                            " seventh ", " eighth ", " ninth ", " tenth "],
+                           [" 1 ", " 2 ", " 3 ", " 4 ", " 5 ", " 6 ", " 7 ", " 8 ", " 9 ", " 10 "])
     e = (f.str.replace_all(r"(\d)(?:st|nd|rd|th)\b", "${1}")      # 38nd -> 38
          .str.replace_all(r"\b(\d+)\s*1\s*/\s*2\b", "${1}")        # 77 1/2 -> 77
          .str.replace_all(r"(\d)([a-z])\b", "${1} ${2}")           # 33a -> 33 a

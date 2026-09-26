@@ -22,10 +22,10 @@ import lightgbm as lgb
 import polars as pl
 
 from src.aliases import apply_aliases, load_aliases
-from src.blocking import generate_candidates
+from src.blocking import PRESETS, generate_candidates
 from src.config import DATA_DIR, WORK_DIR
 from src.decision import G, decide, to_lists
-from src.features import FEATURES, compute_features_chunked, token_idf
+from src.features import FEATURES, add_name_freq, compute_features_chunked, token_idf
 from src.io_utils import write_id_lists
 from src.train import load_normalized, log
 
@@ -80,13 +80,16 @@ def main():
     log("loading normalized test data")
     s1, pool = load_normalized(norm_dir, "test")
     s1, pool = apply_aliases(s1, aliases), apply_aliases(pool, aliases)
+    s1, pool = add_name_freq(s1), add_name_freq(pool)
     log(f"test: {s1.height:,} S1, {pool.height:,} S2/S3; countries "
         f"{s1.group_by('country').len().sort('len', descending=True).rows()}")
 
     cand_path = mdir / "test_cands.parquet"
     if args.force or not cand_path.exists():
         log("blocking (all test S1 vs test S2/S3 pool)")
-        generate_candidates(s1, pool, top_k=params["top_k"], log=log).write_parquet(cand_path)
+        preset = params.get("blocking", "v6")
+        log(f"blocking preset: {preset}")
+        generate_candidates(s1, pool, cfg=PRESETS[preset], log=log).write_parquet(cand_path)
     cands = pl.read_parquet(cand_path)
     log(f"candidates: {cands.height:,} pairs ({cands.height / s1.height:.1f} per S1)")
 

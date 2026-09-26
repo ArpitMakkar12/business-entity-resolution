@@ -16,8 +16,10 @@ identity to all of them:
     same address + one changed word is ordinary noise in this data, e.g.
     "Rocky Center" is a true match of "Rocky Electric", so it must not be
     labelled a negative),
-  * one core name word of the S1 name is replaced by another business word
-    from the same country's S1 vocabulary (70%), or a word is added (30%).
+  * the name gets a different legal form (35%, "Cure Grill PC" -> "Cure Grill
+    Inc"), an added filler word (25%, "... Partners"), or one core word replaced
+    (25%) / added (15%) from the country's S1 vocabulary - the variants seen in
+    the audit of the test predictions.
 The resulting records get new ids (S2-syn*/S3-syn*), are not in the ground
 truth, and are therefore negatives for every S1 entity. They are added to the
 training pool before blocking, so they compete as candidates exactly like the
@@ -70,6 +72,33 @@ def _swap_word(name: str, target: str, new_word: str, mode: str) -> str:
     return f"{name} {new_word.upper() if name.isupper() else new_word}"
 
 
+# Sibling name variants seen in the test audit: same core name with a different
+# legal form ("Cure Grill PC" / "Cure Grill Inc"), an added filler word
+# ("Mosoft Currencyshares" / "... Partners"), or one word replaced / added.
+LEGAL_ALTS = {
+    "US": ["LLC", "Inc", "Corp", "Ltd", "LP", "PC", "PLLC", "Co", "Inc."],
+    "India": ["Private Limited", "Pvt Ltd", "Limited", "LLP", "Pvt. Ltd."],
+    "France": ["SARL", "SAS", "SASU", "SCI", "EURL", "SA"],
+}
+FILLERS = ["Partners", "Center", "Services", "Group", "Holdings", "Associates", "Enterprises",
+           "Solutions", "Harbor", "Coastal", "Consulting", "International", "Global", "Company"]
+_LEGAL_RE = re.compile(r"\b(private limited|pvt\.? ?ltd\.?|limited|llp|l\.?l\.?c\.?|inc\.?|corp\.?|"
+                       r"corporation|ltd\.?|lp|pllc|pc|co\.?|sarl|sasu|sas|sci|eurl|sa)\b", re.I)
+MODES = [("legal", 0.35), ("filler", 0.25), ("replace", 0.25), ("add", 0.15)]
+DELTAS = [1, 1, 2, 2, 3, 4, 5, 5, 6, 8, 10, 11, 12, 15, 20, 21, 25, 30]
+
+
+def _change_legal(name: str, country: str, rng: random.Random) -> str:
+    """Swap the legal form for another one of the same country (append if none)."""
+    alts = LEGAL_ALTS.get(country, LEGAL_ALTS["US"])
+    m = _LEGAL_RE.search(name)
+    cur = m.group(0).lower().replace(".", "") if m else ""
+    choices = [a for a in alts if a.lower().replace(".", "") != cur] or alts
+    new = rng.choice(choices)
+    new = new.upper() if name.isupper() else new
+    return _LEGAL_RE.sub(new, name, count=1) if m else f"{name} {new}"
+
+
 def make_siblings(query: pl.DataFrame, pool: pl.DataFrame, gt_pairs: pl.DataFrame,
                   frac: float = 0.4, seed: int = 7) -> pl.DataFrame:
     """Raw sibling records (entity_id, business_name, business_address, country).
@@ -95,13 +124,21 @@ def make_siblings(query: pl.DataFrame, pool: pl.DataFrame, gt_pairs: pl.DataFram
         new_word = rng.choice(pool_words)
         while words and new_word.lower() in {w.lower() for w in words}:
             new_word = rng.choice(pool_words)
-        delta = rng.choice([-1, 1]) * rng.randint(1, 30)
+        delta = rng.choice([-1, 1]) * rng.choice(DELTAS)
+        u, mode = rng.random(), MODES[-1][0]
+        for name_, w in MODES:
+            if u < w:
+                mode = name_
+                break
+            u -= w
+        if mode == "filler":
+            new_word = rng.choice(FILLERS)
         ident[sid] = (rng.randint(1, 3), s1_num, delta, rng.choice(words) if words else "",
-                      new_word, "replace" if rng.random() < 0.7 else "add")
+                      new_word, mode, country)
     out, n = [], 0
     for sid, mid, name, addr, r in base.select(G, "matched_id", "business_name",
                                                "business_address", "_r").iter_rows():
-        k, s1_num, delta, target, new_word, mode = ident[sid]
+        k, s1_num, delta, target, new_word, mode, country = ident[sid]
         if r >= k or not name or " " not in name.strip() or re.search(r"[@#]|\.com|www", name):
             continue          # handles / domains do not make convincing siblings
         if not (s1_num and s1_num.isdigit()):
@@ -111,7 +148,10 @@ def make_siblings(query: pl.DataFrame, pool: pl.DataFrame, gt_pairs: pl.DataFram
             continue          # copy does not carry the S1 number: identical address would
                               # contradict real noisy matches ("Rocky Center" = "Rocky Electric")
         n += 1
-        out.append((f"{mid[:2]}-syn{n}", _swap_word(name or "", target, new_word, mode), new_addr,
-                    sid))
+        if mode == "legal":
+            new_name = _change_legal(name, country, rng)
+        else:
+            new_name = _swap_word(name, target, new_word, "replace" if mode == "replace" else "add")
+        out.append((f"{mid[:2]}-syn{n}", new_name, new_addr, sid))
     sib = pl.DataFrame(out, schema=["entity_id", "business_name", "business_address", G], orient="row")
     return sib.join(chosen.select(G, "country"), on=G).drop(G)

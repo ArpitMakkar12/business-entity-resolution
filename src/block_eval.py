@@ -19,28 +19,22 @@ from pathlib import Path
 import polars as pl
 
 from src.aliases import apply_aliases, learn_aliases, load_aliases
-from src.blocking import (DEFAULT_CAPS, KEY_NAMES, keys_chunked, score_rows,
+from src.blocking import (DEFAULT_CAPS, KEY_NAMES, PRESETS, keys_chunked, score_rows,
                           select_final)
 from src.config import SEED, WORK_DIR, train_paths
 from src.io_utils import explode_ground_truth, read_ground_truth
 from src.train import load_normalized, log
 
-OLD_CAPS = {0: 200, 1: 300, 2: 300, 3: 300, 4: 150, 5: 100, 6: 0, 7: 0}
-BIG_CAPS = {t: 2000 for t in DEFAULT_CAPS}
-def _v(caps, weight, rerank, retrieve_k, final_k):
-    return dict(caps=caps, weight=weight, rerank=rerank, retrieve_k=retrieve_k, final_k=final_k)
-
-
-VARIANTS = {
-    "v0 old keys, log weights, top10":   _v(OLD_CAPS, "log", "none", 0, 10),
-    "v1 new keys, 1/df, top10":          _v(DEFAULT_CAPS, "inv", "none", 0, 10),
-    "v2 1/df, top20":                    _v(DEFAULT_CAPS, "inv", "none", 0, 20),
-    "v3 1/df, rscore 30->10":            _v(DEFAULT_CAPS, "inv", "rscore", 30, 10),
-    "v4 1/df, combo 30->10":             _v(DEFAULT_CAPS, "inv", "combo", 30, 10),
-    "v5 1/df, union 5+5 of 30": _v(DEFAULT_CAPS, "inv", "union", 30, 10),
-    "v6 1/df, union 8+8 of 50 (default)":  _v(DEFAULT_CAPS, "inv", "union", 50, 16),
-    "v7 big caps, union 5+5 of 30":      _v(BIG_CAPS, "inv", "union", 30, 10),
+NAMES = {
+    "v6": "v6  union 8+8 of 50 (sub 2-5)",
+    "v8": "v8  v6 + triple name key",
+    "v9": "v9  +T, 8+8+4 name, of 50",
+    "v10": "v10 +T, 8+8+4 name, of 80",
+    "v11": "v11 +T, 6+6+4 name, of 80",
+    "v12": "v12 +T, 8+8+8 name, of 80",
+    "v13": "v13 +T, 5+5+3 name, of 80",
 }
+VARIANTS = {label: PRESETS[k] for k, label in NAMES.items()}
 
 
 def main():

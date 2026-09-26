@@ -27,7 +27,7 @@ from src.config import N_JOBS
 RECORD_COLS = ["entity_id", "name_core", "name_concat", "name_skeleton", "name_alt_core",
                "name_legal", "name_core_tokens", "name_is_handle", "name_is_domain",
                "name_has_dba", "name_has_indic", "addr_clean", "addr_tokens",
-               "addr_numbers", "addr_states", "addr_empty", "country"]
+               "addr_numbers", "addr_states", "addr_empty", "country", "name_freq"]
 
 FEATURES = [
     # context
@@ -47,6 +47,8 @@ FEATURES = [
     # sibling-business signals (neighbouring house number, one name word changed)
     "num_conflict", "num_delta_log", "num_delta_small", "ntok_only1", "ntok_only2",
     "name_one_sub", "grp_s1num_support", "grp_num_minority",
+    # name ambiguity: how many records in the same table/country share the exact name
+    "s1_name_freq", "cand_name_freq", "addr_empty_amb",
 ]
 
 
@@ -59,6 +61,15 @@ def token_idf(*frames: pl.DataFrame) -> pl.DataFrame:
     return (df.join(n_docs, on="country")
             .select("country", pl.col("name_core_tokens").alias("tok"),
                     (pl.col("n_docs") / pl.col("len")).log().cast(pl.Float32).alias("idf")))
+
+
+def add_name_freq(df: pl.DataFrame) -> pl.DataFrame:
+    """name_freq = number of records in ``df`` (same country) with the same concatenated name.
+
+    Computed on a *whole* table (all S1 records, or the whole S2+S3 pool) so the
+    value is comparable between training and test.
+    """
+    return df.with_columns(pl.len().over(["country", "name_concat"]).cast(pl.UInt32).alias("name_freq"))
 
 
 def _min_abs_delta(s: pl.Series) -> pl.Series:
@@ -156,6 +167,10 @@ def compute_features(pairs: pl.DataFrame, s1: pl.DataFrame, pool: pl.DataFrame,
         pl.col("name_is_domain_2").cast(pl.Int8).alias("domain2"),
         pl.col("name_has_dba_2").cast(pl.Int8).alias("dba2"),
         pl.col("name_has_indic_2").cast(pl.Int8).alias("indic2"),
+        (pl.col("name_freq_1").cast(pl.Float32) + 1).log(10).alias("s1_name_freq"),
+        (pl.col("name_freq_2").cast(pl.Float32) + 1).log(10).alias("cand_name_freq"),
+        # an address-less record whose name is shared by several S1 entities is ambiguous
+        (pl.col("addr_empty_2") & (pl.col("name_freq_1") > 1)).cast(pl.Int8).alias("addr_empty_amb"),
         pl.col("name_core_1").str.len_chars().cast(pl.Float32).alias("len_core1"),
         pl.col("name_core_2").str.len_chars().cast(pl.Float32).alias("len_core2"),
         inter("addr_tokens_1", "addr_tokens_2").alias("atok_inter"),

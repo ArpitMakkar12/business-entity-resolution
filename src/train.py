@@ -25,10 +25,10 @@ import numpy as np
 import polars as pl
 
 from src.aliases import apply_aliases, learn_aliases, load_aliases, save_aliases
-from src.blocking import blocking_recall, generate_candidates
+from src.blocking import PRESETS, blocking_recall, generate_candidates
 from src.config import N_JOBS, SEED, WORK_DIR, train_paths
 from src.decision import G, decide, f05_per_entity, to_lists, tune_decision
-from src.features import FEATURES, compute_features_chunked, token_idf
+from src.features import FEATURES, add_name_freq, compute_features_chunked, token_idf
 from src.io_utils import explode_ground_truth, read_ground_truth
 from src.normalize import add_views
 from src.siblings import make_siblings
@@ -60,8 +60,8 @@ def main():
     ap.add_argument("--data-dir", default=None, help="challenge dataset dir (for ground truth)")
     ap.add_argument("--n-train", type=int, default=300_000)
     ap.add_argument("--n-valid", type=int, default=100_000)
-    ap.add_argument("--top-k", type=int, default=16,
-                    help="final candidates per S1 per source pair of lists (union 8+8)")
+    ap.add_argument("--blocking", default="v6", choices=sorted(PRESETS),
+                    help="blocking preset from src.blocking.PRESETS (compare with src.block_eval)")
     ap.add_argument("--rounds", type=int, default=3000)
     ap.add_argument("--siblings", type=float, default=0.4,
                     help="share of sampled S1 entities that get synthetic sibling "
@@ -86,6 +86,7 @@ def main():
     aliases = load_aliases(alias_path)
     log(f"aliases: {len(aliases):,} learned, e.g. {dict(list(aliases.items())[:6])}")
     s1, pool = apply_aliases(s1, aliases), apply_aliases(pool, aliases)
+    s1 = add_name_freq(s1)                       # on all training S1 records
 
     # sample S1 entities (split by entity) -----------------------------------
     ids = s1.select("entity_id").sample(fraction=1.0, shuffle=True, seed=SEED)["entity_id"]
@@ -105,11 +106,13 @@ def main():
         pool = pl.concat([pool, sib.select(pool.columns)])
         log(f"injected {sib.height:,} synthetic sibling records into the training pool")
 
+    pool = add_name_freq(pool)                   # on the whole pool (incl. siblings)
+
     # 2. blocking ------------------------------------------------------------
     cand_path = mdir / "train_cands.parquet"
     if args.force or not cand_path.exists():
         log("blocking (sampled S1 vs full S2/S3 pool)")
-        cands = generate_candidates(query, pool, top_k=args.top_k, log=log)
+        cands = generate_candidates(query, pool, cfg=PRESETS[args.blocking], log=log)
         cands.write_parquet(cand_path)
     cands = pl.read_parquet(cand_path)
     rec = blocking_recall(cands, gt_pairs, query["entity_id"])
@@ -159,8 +162,8 @@ def main():
     report = {"sibling_false_pairs": sib_fp, "sibling_hit_entities": sib_ent, "blocking": rec, "valid_f05": params["valid_f05"], "by_country": by_country,
               "by_type": by_type, "mean_precision": round(per["precision"].mean(), 4),
               "mean_recall": round(per["recall"].mean(), 4), "best_iteration": model.best_iteration,
-              "decision": params, "n_train_s1": n_tr, "n_valid_s1": n_va, "top_k": args.top_k}
-    (mdir / "params.json").write_text(json.dumps({"decision": params, "top_k": args.top_k,
+              "decision": params, "n_train_s1": n_tr, "n_valid_s1": n_va, "blocking": args.blocking}
+    (mdir / "params.json").write_text(json.dumps({"decision": params, "blocking": args.blocking,
                                                    "features": FEATURES}, indent=2))
     (mdir / "report.json").write_text(json.dumps(report, indent=2))
     log(f"VALIDATION macro F0.5 = {params['valid_f05']:.5f}  by country {by_country}  {by_type}")
