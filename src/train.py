@@ -30,6 +30,8 @@ from src.config import N_JOBS, SEED, WORK_DIR, train_paths
 from src.decision import G, decide, f05_per_entity, to_lists, tune_decision
 from src.features import FEATURES, compute_features_chunked, token_idf
 from src.io_utils import explode_ground_truth, read_ground_truth
+from src.normalize import add_views
+from src.siblings import make_siblings
 
 LGB_PARAMS = {
     "objective": "binary", "learning_rate": 0.05, "num_leaves": 127,
@@ -60,7 +62,10 @@ def main():
     ap.add_argument("--n-valid", type=int, default=100_000)
     ap.add_argument("--top-k", type=int, default=16,
                     help="final candidates per S1 per source pair of lists (union 8+8)")
-    ap.add_argument("--rounds", type=int, default=1000)
+    ap.add_argument("--rounds", type=int, default=3000)
+    ap.add_argument("--siblings", type=float, default=0.4,
+                    help="share of sampled S1 entities that get synthetic sibling "
+                         "distractors injected into the training pool (0 = off)")
     ap.add_argument("--force", action="store_true", help="recompute cached stages")
     args = ap.parse_args()
 
@@ -89,6 +94,16 @@ def main():
     train_ids, valid_ids = ids[:n_tr], ids[n_tr:n_tr + n_va]
     query = s1.filter(pl.col("entity_id").is_in(pl.concat([train_ids, valid_ids]).implode()))
     log(f"sampled {n_tr:,} train + {n_va:,} valid S1 entities")
+
+    # 1b. synthetic sibling distractors (test-like hard negatives) -----------
+    sib_path = mdir / "siblings.parquet"
+    if args.siblings > 0:
+        if args.force or not sib_path.exists():
+            raw = make_siblings(query, pool, gt_pairs, frac=args.siblings, seed=SEED)
+            apply_aliases(add_views(raw), aliases).write_parquet(sib_path)
+        sib = pl.read_parquet(sib_path)
+        pool = pl.concat([pool, sib.select(pool.columns)])
+        log(f"injected {sib.height:,} synthetic sibling records into the training pool")
 
     # 2. blocking ------------------------------------------------------------
     cand_path = mdir / "train_cands.parquet"
@@ -136,7 +151,12 @@ def main():
     by_country = {c: round(v, 5) for c, v in per.group_by("country").agg(pl.col("f05").mean()).iter_rows()}
     by_type = {("singleton" if k else "has_matches"): round(v, 5)
                for k, v in per.group_by("is_singleton").agg(pl.col("f05").mean()).iter_rows()}
-    report = {"blocking": rec, "valid_f05": params["valid_f05"], "by_country": by_country,
+    chosen = decide(scored, params)
+    sib_fp = chosen.filter(pl.col("cand_id").str.contains("-syn")).height
+    sib_ent = chosen.filter(pl.col("cand_id").str.contains("-syn"))[G].n_unique()
+    log(f"sibling false merges on validation: {sib_fp:,} pairs in {sib_ent:,} entities "
+        f"({sib_ent / max(truth.height, 1):.4f} of entities)")
+    report = {"sibling_false_pairs": sib_fp, "sibling_hit_entities": sib_ent, "blocking": rec, "valid_f05": params["valid_f05"], "by_country": by_country,
               "by_type": by_type, "mean_precision": round(per["precision"].mean(), 4),
               "mean_recall": round(per["recall"].mean(), 4), "best_iteration": model.best_iteration,
               "decision": params, "n_train_s1": n_tr, "n_valid_s1": n_va, "top_k": args.top_k}

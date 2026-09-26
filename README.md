@@ -19,11 +19,13 @@ src/
   train.py      end-to-end training + validation report
   predict.py    test prediction -> output/matching_results.tsv + candidate_pairs.tsv
   audit.py      test-vs-validation prediction audit with examples (no labels needed)
+  siblings.py   synthetic 'sibling business' hard negatives injected into the training pool
   postprocess.py house-number conflict rules against sibling-business false merges
   tune_post.py  validation cost / test effect of each post-processing rule
 tests/
   test_normalize.py  regression tests on real noise patterns
-  make_synthetic.py  small synthetic dataset for pipeline smoke tests
+  make_synthetic.py  small synthetic dataset for pipeline smoke tests (incl. sibling distractors)
+  eval_synthetic.py  scores a synthetic run against its hidden test truth
 tools/
   validate_submission.py  organisers' validator (unchanged copy)
 notebooks/

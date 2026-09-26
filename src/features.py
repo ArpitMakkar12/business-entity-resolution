@@ -44,6 +44,9 @@ FEATURES = [
     "state_overlap", "state_both", "addr_tset_gap",
     # duplicate support inside the S1 group
     "grp_same_num", "grp_same_concat",
+    # sibling-business signals (neighbouring house number, one name word changed)
+    "num_conflict", "num_delta_log", "num_delta_small", "ntok_only1", "ntok_only2",
+    "name_one_sub", "grp_s1num_support", "grp_num_minority",
 ]
 
 
@@ -56,6 +59,16 @@ def token_idf(*frames: pl.DataFrame) -> pl.DataFrame:
     return (df.join(n_docs, on="country")
             .select("country", pl.col("name_core_tokens").alias("tok"),
                     (pl.col("n_docs") / pl.col("len")).log().cast(pl.Float32).alias("idf")))
+
+
+def _min_abs_delta(s: pl.Series) -> pl.Series:
+    """Per row: min |n1 - n| over the candidate's numeric house numbers (null if none)."""
+    n1 = s.struct.field("n1")
+    ns = s.struct.field("ns")
+    ex = pl.DataFrame({"i": range(len(s)), "n1": n1, "ns": ns}).explode("ns")
+    agg = (ex.with_columns((pl.col("ns") - pl.col("n1")).abs().alias("d"))
+           .group_by("i").agg(pl.col("d").min()).sort("i"))
+    return agg["d"].cast(pl.Float64)
 
 
 def attach_records(pairs: pl.DataFrame, s1: pl.DataFrame, pool: pl.DataFrame) -> pl.DataFrame:
@@ -163,6 +176,26 @@ def compute_features(pairs: pl.DataFrame, s1: pl.DataFrame, pool: pl.DataFrame,
         (inter("addr_states_1", "addr_states_2") > 0).cast(pl.Int8).alias("state_overlap"),
         ((L("addr_states_1") > 0) & (L("addr_states_2") > 0)).cast(pl.Int8).alias("state_both"),
         pl.col("addr_numbers_2").list.first().fill_null("").alias("_num2"),
+        # both sides carry house numbers but share none
+        ((L("addr_numbers_1") > 0) & (L("addr_numbers_2") > 0)
+         & (inter("addr_numbers_1", "addr_numbers_2") == 0)).cast(pl.Int8).alias("num_conflict"),
+        # name tokens present on only one side
+        (L("name_core_tokens_1") - inter("name_core_tokens_1", "name_core_tokens_2")).alias("ntok_only1"),
+        (L("name_core_tokens_2") - inter("name_core_tokens_1", "name_core_tokens_2")).alias("ntok_only2"),
+        pl.col("addr_numbers_1").list.first().alias("_num1"),
+    )
+    # distance between S1's first house number and the closest candidate number
+    d = pl.col("addr_numbers_2").list.eval(
+        pl.element().cast(pl.Int64, strict=False)).list.eval(pl.element().drop_nulls())
+    df = df.with_columns(
+        pl.struct(n1=pl.col("_num1").cast(pl.Int64, strict=False), ns=d)
+        .map_batches(_min_abs_delta, return_dtype=pl.Float64).alias("_delta"))
+    df = df.with_columns(
+        pl.when(pl.col("_delta").is_null()).then(-1.0)
+        .otherwise((pl.col("_delta") + 1).log(10)).alias("num_delta_log"),
+        (pl.col("_delta").is_between(1, 30).fill_null(False)).cast(pl.Int8).alias("num_delta_small"),
+        ((pl.col("ntok_only1") == 1) & (pl.col("ntok_only2") == 1)).cast(pl.Int8).alias("name_one_sub"),
+        pl.col("addr_numbers_2").list.contains(pl.col("_num1")).fill_null(False).alias("_has_s1num"),
     )
     g = "source1_entity_id"
     df = df.with_columns(
@@ -175,7 +208,14 @@ def compute_features(pairs: pl.DataFrame, s1: pl.DataFrame, pool: pl.DataFrame,
         (pl.when(pl.col("_num2") != "").then(pl.len().over([g, "_num2"]) - 1).otherwise(0))
         .cast(pl.Float32).alias("grp_same_num"),
         (pl.len().over([g, "name_concat_2"]) - 1).cast(pl.Float32).alias("grp_same_concat"),
+        # how many other candidates carry the S1 record's own house number
+        (pl.col("_has_s1num").cast(pl.Int32).sum().over(g) - pl.col("_has_s1num").cast(pl.Int32))
+        .cast(pl.Float32).alias("grp_s1num_support"),
     )
+    df = df.with_columns(
+        # candidate lacks the S1 number while other candidates in the group have it
+        ((~pl.col("_has_s1num")) & (pl.col("_num1").is_not_null())
+         & (pl.col("grp_s1num_support") > 0)).cast(pl.Int8).alias("grp_num_minority"))
     df = df.join(_idf_features(df, idf), on="pid", how="left")
     return df.select(["source1_entity_id", "cand_id", "source", "country_1"]
                      + [pl.col(f).cast(pl.Float32) for f in FEATURES]).rename({"country_1": "country"})

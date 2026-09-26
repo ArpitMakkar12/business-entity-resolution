@@ -59,6 +59,9 @@ def main():
     ap.add_argument("--data-dir", default=str(DATA_DIR))
     ap.add_argument("--validator", default=None, help="path to utils/validate_submission.py")
     ap.add_argument("--force", action="store_true", help="recompute cached stages")
+    ap.add_argument("--rescore", action="store_true",
+                    help="reuse cached test candidates but recompute features + scores "
+                         "(use after retraining the model)")
     ap.add_argument("--tau", type=float, default=None,
                     help="override the tuned rule with a plain probability threshold")
     ap.add_argument("--post", default="none",
@@ -88,7 +91,7 @@ def main():
     log(f"candidates: {cands.height:,} pairs ({cands.height / s1.height:.1f} per S1)")
 
     scored_path = mdir / "test_scored.parquet"
-    if args.force or not scored_path.exists():
+    if args.force or args.rescore or not scored_path.exists():
         log("features + scoring")
         idf = token_idf(s1, pool)
         parts = []

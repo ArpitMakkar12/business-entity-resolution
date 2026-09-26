@@ -123,6 +123,18 @@ def main():
                 n, ad = noisy_record(e, r, c)
                 (s2 if src == "S2" else s3).append(f"{eid}\t{n}\t{ad}\t{c}\n")
                 ids.append(eid)
+            # sibling distractor business (no S1): neighbouring number, one word changed
+            if r.random() < (0.35 if split == "test" else 0.05) and ids:
+                sib = dict(e)
+                sib["num"] = str(max(1, int(e["num"]) + r.choice([-1, 1]) * r.randint(1, 30)))
+                ws = e["core"].split()
+                ws[r.randrange(len(ws))] = r.choice(FILLERS + ["Harbor", "Coastal", "Estate"])
+                sib["core"] = " ".join(ws)
+                sib["name"] = (sib["core"] + " " + e["legal"]).strip()
+                for _ in range(r.choice([1, 2, 3])):
+                    src = r.choice(["S2", "S3"])
+                    n, ad = noisy_record(sib, r, c)
+                    (s2 if src == "S2" else s3).append(f"{src}-{r.randrange(10**9)}\t{n}\t{ad}\t{c}\n")
             if has_s1:
                 sid = f"S1-{r.randrange(10**9)}"
                 n, ad = s1_record(e)
@@ -130,6 +142,9 @@ def main():
                 gt.append(f"{sid}\t{','.join(ids)}\n")
         for name, rows in (("source1", s1), ("source2", s2), ("source3", s3)):
             (d / f"{split}_{name}.tsv").write_text(head + "".join(rows), encoding="utf-8")
+        if split == "test":   # hidden truth, only for local evaluation (tests/eval_synthetic.py)
+            (Path(a.out) / "test_truth_hidden.tsv").write_text(
+                "source1_entity_id\tmatched_entity_ids\n" + "".join(gt), encoding="utf-8")
         if split == "train":
             (d / "train_ground_truth.tsv").write_text(
                 "source1_entity_id\tmatched_entity_ids\n" + "".join(gt), encoding="utf-8")
