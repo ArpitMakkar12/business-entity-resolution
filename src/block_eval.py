@@ -26,13 +26,11 @@ from src.io_utils import explode_ground_truth, read_ground_truth
 from src.train import load_normalized, log
 
 NAMES = {
-    "v6": "v6  union 8+8 of 50 (sub 2-5)",
-    "v8": "v8  v6 + triple name key",
-    "v9": "v9  +T, 8+8+4 name, of 50",
-    "v10": "v10 +T, 8+8+4 name, of 80",
-    "v11": "v11 +T, 6+6+4 name, of 80",
-    "v12": "v12 +T, 8+8+8 name, of 80",
-    "v13": "v13 +T, 5+5+3 name, of 80",
+    "v10": "v10 8+8+4 name, of 80 (sub 6-8)",
+    "v12": "v12 8+8+8 name, of 80",
+    "v14": "v14 v10 + name retrieval 20",
+    "v15": "v15 7+7+5, name retrieval 20",
+    "v16": "v16 8+8+5, name ret 30, C/T cap 1000",
 }
 VARIANTS = {label: PRESETS[k] for k, label in NAMES.items()}
 

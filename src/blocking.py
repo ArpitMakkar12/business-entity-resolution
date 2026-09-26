@@ -39,6 +39,7 @@ from src.normalize import ADDRESS_CANON, NAME_STOPWORDS
 
 STREET_WORDS = sorted(set(ADDRESS_CANON.values()) | set(ADDRESS_CANON.keys()))
 KEY_NAMES = {0: "N", 1: "P", 2: "A", 3: "U", 4: "W", 5: "C", 6: "B", 7: "M", 8: "T"}
+NAME_KEY_TYPES = (0, 1, 5, 8)          # keys built from the name alone
 TYPE_WEIGHT = {0: 1.0, 1: 1.5, 2: 2.0, 3: 2.0, 4: 1.0, 5: 2.0, 6: 2.0, 7: 2.0, 8: 2.5}
 DEFAULT_CAPS = {0: 300, 1: 500, 2: 500, 3: 500, 4: 200, 5: 300, 6: 500, 7: 500, 8: 500}
 # rerank: "none"  -> top final_k by blocking score
@@ -63,6 +64,13 @@ PRESETS = {
             "k_b": 8, "k_r": 8, "k_n": 8},
     "v13": {"caps": DEFAULT_CAPS, "weight": "inv", "retrieve_k": 80, "final_k": 0, "rerank": "union3",
             "k_b": 5, "k_r": 5, "k_n": 3},
+    # + name-only retrieval path (top 20 by name-key score also re-ranked)
+    "v14": {"caps": DEFAULT_CAPS, "weight": "inv", "retrieve_k": 80, "name_retrieve_k": 20,
+            "final_k": 0, "rerank": "union3", "k_b": 8, "k_r": 8, "k_n": 4},
+    "v15": {"caps": DEFAULT_CAPS, "weight": "inv", "retrieve_k": 80, "name_retrieve_k": 20,
+            "final_k": 0, "rerank": "union3", "k_b": 7, "k_r": 7, "k_n": 5},
+    "v16": {"caps": {**DEFAULT_CAPS, 5: 1000, 8: 1000}, "weight": "inv", "retrieve_k": 80,
+            "name_retrieve_k": 30, "final_k": 0, "rerank": "union3", "k_b": 8, "k_r": 8, "k_n": 5},
 }
 MAX_NAME_TOKENS, MAX_ADDR_WORDS, MAX_NUMBERS = 4, 8, 3
 
@@ -154,9 +162,11 @@ def score_rows(rows: pl.DataFrame, caps: dict, weight: str) -> pl.DataFrame:
     """rows (idx, pidx, t, df) -> (idx, pidx, bscore, n_keytypes) under a config."""
     w = pl.col("tw") / (pl.col("df").cast(pl.Float32) if weight == "inv"
                         else (pl.col("df").cast(pl.Float32) + 1).log(2))
+    is_name = pl.col("t").is_in(list(NAME_KEY_TYPES))
     return (rows.join(_caps_frame(caps), on="t").filter(pl.col("df") <= pl.col("cap"))
             .group_by("idx", "pidx")
             .agg(w.sum().cast(pl.Float32).alias("bscore"),
+                 w.filter(is_name).sum().cast(pl.Float32).alias("nbscore"),
                  pl.col("t").n_unique().cast(pl.UInt8).alias("n_keytypes")))
 
 
@@ -186,7 +196,15 @@ def select_final(scored: pl.DataFrame, q: pl.DataFrame, p: pl.DataFrame, cfg: di
     mode, k = cfg["rerank"], cfg["final_k"]
     if mode in (None, False, "none"):
         return top_per_source(scored, "bscore", k)
-    pre = rerank_score(top_per_source(scored, "bscore", cfg["retrieve_k"]), q, p)
+    retrieved = top_per_source(scored, "bscore", cfg["retrieve_k"])
+    if cfg.get("name_retrieve_k"):
+        # second retrieval path ranked by name-key evidence only: address-less copies
+        # ("Gulf State LLC", no address) are otherwise outranked by every business at
+        # the S1's street and never reach the re-rank stage
+        by_name = top_per_source(scored.filter(pl.col("nbscore") > 0), "nbscore",
+                                 cfg["name_retrieve_k"])
+        retrieved = pl.concat([retrieved, by_name]).unique(["idx", "pidx"], keep="first")
+    pre = rerank_score(retrieved, q, p)
     if mode == "combo":
         pre = pre.with_columns((pl.col("rscore") + pl.col("bscore").clip(upper_bound=2.0)).alias("combo"))
         return top_per_source(pre, "combo", k).drop("combo")

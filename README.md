@@ -21,6 +21,7 @@ src/
   audit.py      test-vs-validation prediction audit with examples (no labels needed)
   siblings.py   synthetic 'sibling business' hard negatives injected into the training pool
   postprocess.py house-number conflict rules against sibling-business false merges
+  stage2.py     group-consistency re-scoring (candidate vs confident matches of the same S1)
   tune_post.py  validation cost / test effect of each post-processing rule
   error_analysis.py where validation F0.5 is lost (blocking misses, false merges, ...) with examples
 tests/
