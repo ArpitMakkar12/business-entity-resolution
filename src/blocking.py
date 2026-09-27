@@ -72,6 +72,11 @@ PRESETS = {
     "v16": {"caps": {**DEFAULT_CAPS, 5: 1000, 8: 1000}, "weight": "inv", "retrieve_k": 80,
             "name_retrieve_k": 30, "final_k": 0, "rerank": "union3", "k_b": 8, "k_r": 8, "k_n": 5},
 }
+# v16 + reverse search: every pool record also proposes its best S1 records (by blocking
+# score over ALL S1 of the country); kept when name+address similarity is high enough.
+# Recovers true copies crowded out of their S1's list by look-alike records.
+for _name, _k, _r in (("v17", 2, 1.0), ("v18", 3, 0.8), ("v19", 2, 0.6)):
+    PRESETS[_name] = {**PRESETS["v16"], "rev_k": _k, "rev_min_rscore": _r, "rev_min_nscore": 0.85}
 MAX_NAME_TOKENS, MAX_ADDR_WORDS, MAX_NUMBERS = 4, 8, 3
 
 
@@ -223,6 +228,12 @@ def select_final(scored: pl.DataFrame, q: pl.DataFrame, p: pl.DataFrame, cfg: di
     return top_per_source(pre, "rscore", k)                      # "rscore"
 
 
+def _top_per_pidx(scored: pl.DataFrame, k: int) -> pl.DataFrame:
+    """Best ``k`` S1 records (by blocking score) for every pool record."""
+    return (scored.sort(["pidx", "bscore"], descending=[False, True])
+            .group_by("pidx", maintain_order=True).head(k))
+
+
 def generate_candidates(queries: pl.DataFrame, pool: pl.DataFrame, cfg: dict = None,
                         chunk_size: int = 20_000, log=print, top_k: int = None) -> pl.DataFrame:
     """Candidate pairs for every query (S1) record against the S2/S3 pool.
@@ -246,18 +257,38 @@ def generate_candidates(queries: pl.DataFrame, pool: pl.DataFrame, cfg: dict = N
         pk = pool_key_table(p, max(caps.values()))
         qk = keys_chunked(q).drop("t")
         src = p.select(pl.col("idx").alias("pidx"), pl.col("entity_id").str.slice(0, 2).alias("source"))
-        n_pairs = 0
+        n_pairs, rev_k = 0, cfg.get("rev_k", 0)
+        fwd, running = [], None
+        ids1 = q.select("idx", pl.col("entity_id").alias("source1_entity_id"))
+        ids2 = p.select(pl.col("idx").alias("pidx"), pl.col("entity_id").alias("cand_id"))
         for start in range(0, q.height, chunk_size):
             qc = qk.filter(pl.col("idx").is_between(start, start + chunk_size - 1))
             scored = score_rows(qc.join(pk, on="key"), caps, cfg["weight"]).join(src, on="pidx")
-            cand = (select_final(scored, q, p, cfg).join(q.select("idx", pl.col("entity_id").alias("source1_entity_id")), on="idx")
-                    .join(p.select(pl.col("idx").alias("pidx"), pl.col("entity_id").alias("cand_id")),
-                          on="pidx")
+            sel = select_final(scored, q, p, cfg)
+            if rev_k:
+                # reverse search: best S1 records of every pool record, over ALL S1 chunks
+                fwd.append(sel.select("idx", "pidx"))
+                top = _top_per_pidx(scored.select("idx", "pidx", "source", "bscore", "n_keytypes"), rev_k)
+                running = top if running is None else _top_per_pidx(pl.concat([running, top]), rev_k)
+            cand = (sel.join(ids1, on="idx").join(ids2, on="pidx")
                     .select("source1_entity_id", "cand_id", "source", "bscore", "n_keytypes"))
             n_pairs += cand.height
             out.append(cand)
+        n_rev = 0
+        if rev_k and running is not None:
+            rev = running.join(pl.concat(fwd), on=["idx", "pidx"], how="anti")
+            if rev.height:
+                rev = rerank_score(rev, q, p).filter(
+                    (pl.col("rscore") >= cfg.get("rev_min_rscore", 0.0))
+                    | (pl.col("nscore") >= cfg.get("rev_min_nscore", 2.0)))
+                cand = (rev.join(ids1, on="idx").join(ids2, on="pidx")
+                        .select("source1_entity_id", "cand_id", "source", "bscore", "n_keytypes"))
+                n_rev = cand.height
+                n_pairs += n_rev
+                out.append(cand)
         log(f"  [{country}] {q.height:,} queries x {p.height:,} pool -> {n_pairs:,} pairs "
-            f"({n_pairs / max(q.height, 1):.1f}/query) in {time.time() - t0:.0f}s")
+            f"({n_pairs / max(q.height, 1):.1f}/query{f', {n_rev:,} from reverse search' if rev_k else ''})"
+            f" in {time.time() - t0:.0f}s")
     if not out:
         return pl.DataFrame(schema={"source1_entity_id": pl.Utf8, "cand_id": pl.Utf8,
                                     "source": pl.Utf8, "bscore": pl.Float32,

@@ -111,8 +111,16 @@ def main():
     # 2. blocking ------------------------------------------------------------
     cand_path = mdir / "train_cands.parquet"
     if args.force or not cand_path.exists():
-        log("blocking (sampled S1 vs full S2/S3 pool)")
-        cands = generate_candidates(query, pool, cfg=PRESETS[args.blocking], log=log)
+        cfg = PRESETS[args.blocking]
+        if cfg.get("rev_k"):
+            # reverse search ranks S1 records per pool record, so it must see ALL S1
+            # records (as on test); only the sampled queries' pairs are kept
+            log("blocking (ALL S1 vs full S2/S3 pool, reverse search on; sampled pairs kept)")
+            cands = generate_candidates(s1, pool, cfg=cfg, log=log).filter(
+                pl.col("source1_entity_id").is_in(query["entity_id"].implode()))
+        else:
+            log("blocking (sampled S1 vs full S2/S3 pool)")
+            cands = generate_candidates(query, pool, cfg=cfg, log=log)
         cands.write_parquet(cand_path)
     cands = pl.read_parquet(cand_path)
     rec = blocking_recall(cands, gt_pairs, query["entity_id"])
