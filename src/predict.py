@@ -69,6 +69,10 @@ def main():
     ap.add_argument("--blend", nargs="*", default=[],
                     help="other model dirs whose test probabilities are averaged in "
                          "(must share this model dir's test_cands.parquet)")
+    ap.add_argument("--assign", default="argmax", choices=["argmax", "strength"],
+                    help="who gets a record likely for several S1: highest p (default) or strongest S1")
+    ap.add_argument("--assign-margin", type=float, default=1.0,
+                    help="strength assignment only among claimants within this margin of the best p")
     ap.add_argument("--blank-kmax", type=int, default=None,
                     help="no-match rule: S1 with at most this many predicted matches ...")
     ap.add_argument("--blank-pmax", type=float, default=2.0, help="... whose best probability is below this")
@@ -137,6 +141,19 @@ def main():
         log(f"PROBE: no matches predicted for {args.blank_country}")
         scored = scored.filter(~pl.col("country").is_in(args.blank_country))
     s1_ids = s1["entity_id"]
+    if args.assign == "strength" and rule.get("rule") == "threshold":
+        # contested records (likely for several S1 entities) go to the S1 whose whole
+        # predicted set is strongest (sum of p), among claimants within ``assign_margin``
+        # of the best probability, instead of to the single highest probability; this
+        # avoids splitting one business's copies between two look-alike S1 entities
+        hi = scored.filter(pl.col("p") >= rule["tau"])
+        hi = hi.join(hi.group_by(G).agg(pl.col("p").sum().alias("_strength")), on=G)
+        hi = hi.filter(pl.col("p") >= pl.col("p").max().over("cand_id") - args.assign_margin)
+        n_multi = hi.filter(pl.len().over("cand_id") >= 2)["cand_id"].n_unique()
+        hi = (hi.sort(["cand_id", "_strength", "p"], descending=[False, True, True])
+              .unique("cand_id", keep="first", maintain_order=True).drop("_strength"))
+        log(f"strength assignment (margin {args.assign_margin}): {n_multi:,} contested records")
+        scored = hi
     sel = decide(scored, rule)
     if args.blank_kmax is not None:
         # "no real match" rule: drop every prediction of S1 entities whose predicted set
