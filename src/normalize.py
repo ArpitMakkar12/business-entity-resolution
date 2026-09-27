@@ -27,6 +27,7 @@ No external data or services are used; all word lists are hand-written.
 
 Entry points: ``add_views(df)`` and the CLI ``python -m src.normalize``.
 """
+import os
 import re
 from functools import lru_cache
 
@@ -248,6 +249,20 @@ def _skeleton(e: pl.Expr) -> pl.Expr:
     return e.str.replace_many(doubles, [d[0] for d in doubles])
 
 
+# Optional: honorific / filler PREFIX words removed from the start of every name
+# (e.g. BER_STRIP_PREFIX=shri,sri,smt). Off by default; enabled only for a
+# normalization run whose outputs go to their own directory. A word is removed
+# only when another word follows it, and on S1 and S2/S3 alike.
+STRIP_PREFIX = [w.strip().lower() for w in os.environ.get("BER_STRIP_PREFIX", "").split(",") if w.strip()]
+
+
+def _strip_prefix(e: pl.Expr) -> pl.Expr:
+    if not STRIP_PREFIX:
+        return e
+    alt = "|".join(re.escape(w) for w in STRIP_PREFIX)
+    return e.str.replace(rf"^(?:(?:{alt})\s+)+", "")   # string is stripped: a lone word stays
+
+
 def _name_frame(df: pl.DataFrame, name_col: str) -> pl.DataFrame:
     df = fold_column(df, name_col, "_nf")
     f = pl.col("_nf")
@@ -259,7 +274,7 @@ def _name_frame(df: pl.DataFrame, name_col: str) -> pl.DataFrame:
     alt = (pl.when(has_dba).then(f.str.extract(rf"^(.*?){DBA_MARKERS}", 1))
            .when(has_pipe).then(f.str.extract(r"\|(.*)$", 1)).otherwise(pl.lit("")))
     out = df.with_columns(
-        _tokens(_name_cleanup(main)).list.eval(pl.element().replace(LEGAL_CANON))
+        _tokens(_strip_prefix(_name_cleanup(main))).list.eval(pl.element().replace(LEGAL_CANON))
         .alias("name_tokens"),
         _tokens(_name_cleanup(alt.fill_null(""))).list.eval(pl.element().replace(LEGAL_CANON))
         .alias("_alt_tokens"),
