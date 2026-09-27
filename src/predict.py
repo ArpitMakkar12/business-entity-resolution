@@ -69,6 +69,13 @@ def main():
     ap.add_argument("--blend", nargs="*", default=[],
                     help="other model dirs whose test probabilities are averaged in "
                          "(must share this model dir's test_cands.parquet)")
+    ap.add_argument("--blank-kmax", type=int, default=None,
+                    help="no-match rule: S1 with at most this many predicted matches ...")
+    ap.add_argument("--blank-pmax", type=float, default=2.0, help="... whose best probability is below this")
+    ap.add_argument("--blank-1src", action="store_true", help="... all from one source (S2 or S3)")
+    ap.add_argument("--blank-numdiff", action="store_true",
+                    help="... none sharing a house number with the S1")
+    ap.add_argument("--blank-countries", nargs="*", default=[], help="... only in these countries")
     ap.add_argument("--blank-country", nargs="*", default=[],
                     help="PROBE ONLY: predict no matches for these countries (measures their score)")
     args = ap.parse_args()
@@ -130,7 +137,34 @@ def main():
         log(f"PROBE: no matches predicted for {args.blank_country}")
         scored = scored.filter(~pl.col("country").is_in(args.blank_country))
     s1_ids = s1["entity_id"]
-    match = to_lists(decide(scored, rule), s1_ids.to_list())
+    sel = decide(scored, rule)
+    if args.blank_kmax is not None:
+        # "no real match" rule: drop every prediction of S1 entities whose predicted set
+        # is small and weak (see src.diag_k), all listed conditions must hold
+        from src.postprocess import numbers_frame
+        d = (sel.join(scored.select(G, "cand_id", "p"), on=[G, "cand_id"])
+             .join(numbers_frame(s1, G, "nums1"), on=G, how="left")
+             .join(numbers_frame(pool, "cand_id", "nums2"), on="cand_id", how="left")
+             .with_columns((pl.col("nums1").list.set_intersection(pl.col("nums2")).list.len() > 0)
+                           .fill_null(False).alias("nm"),
+                           (pl.col("nums1").list.len().fill_null(0) == 0).alias("s1_nonum")))
+        per = d.group_by(G).agg(pl.len().alias("k"), pl.col("p").max().alias("pmax"),
+                                pl.col("cand_id").str.slice(0, 2).n_unique().alias("nsrc"),
+                                (pl.col("nm").any() | pl.col("s1_nonum").first()).alias("num_ok"))
+        cond = (pl.col("k") <= args.blank_kmax) & (pl.col("pmax") < args.blank_pmax)
+        if args.blank_1src:
+            cond = cond & (pl.col("nsrc") == 1)
+        if args.blank_numdiff:
+            cond = cond & ~pl.col("num_ok")
+        if args.blank_countries:
+            cond = cond & pl.col(G).is_in(s1.filter(pl.col("country").is_in(args.blank_countries))
+                                          ["entity_id"].implode())
+        drop = per.filter(cond).select(G)
+        log(f"no-match rule (k<={args.blank_kmax}, pmax<{args.blank_pmax}, 1src={args.blank_1src}, "
+            f"numdiff={args.blank_numdiff}, countries={args.blank_countries or 'all'}): "
+            f"{drop.height:,} S1 entities set to no match")
+        sel = sel.join(drop, on=G, how="anti")
+    match = to_lists(sel, s1_ids.to_list())
     cand_lists = to_lists(cands.select(G, "cand_id"), s1_ids.to_list())
 
     problems = check_outputs(match, cand_lists, s1_ids, pool["entity_id"])
