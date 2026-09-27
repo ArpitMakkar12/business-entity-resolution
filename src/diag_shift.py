@@ -43,6 +43,8 @@ def main():
     ap.add_argument("--n-train", type=int, default=300_000)
     ap.add_argument("--n-valid", type=int, default=100_000)
     ap.add_argument("--out", default=None, help="write the top test-only pairs here (TSV)")
+    ap.add_argument("--exclude-size", action="store_true",
+                    help="adversary ignores features that depend on table sizes (idf, name freq, bscore)")
     args = ap.parse_args()
     mdir, ndir, c = Path(args.model_dir), Path(args.norm_dir), args.country
     tau = json.loads((mdir / "params.json").read_text())["decision"].get("tau", 0.7)
@@ -130,10 +132,12 @@ def main():
         return df.select(G, "cand_id", pl.col("is_test").cast(pl.Int32), pl.col("p").cast(pl.Float64),
                          pl.col("y").cast(pl.Int32), *[pl.col(f).cast(pl.Float32) for f in FEATURES])
     both = pl.concat([norm(val.sample(n=n, seed=1)), norm(test.sample(n=n, seed=1))])
-    X, y = both.select(FEATURES).to_numpy(), both["is_test"].to_numpy()
+    SIZE = {"s1_name_freq", "cand_name_freq", "addr_empty_amb", "bscore", "bscore_gap"}
+    ADV = [f for f in FEATURES if not (args.exclude_size and (f.startswith("idf_") or f in SIZE))]
+    X, y = both.select(ADV).to_numpy(), both["is_test"].to_numpy()
     fold = (both[G].hash(seed=5) % 3).to_numpy()
     oof = np.zeros(len(y))
-    imp = np.zeros(len(FEATURES))
+    imp = np.zeros(len(ADV))
     prm = {"objective": "binary", "learning_rate": 0.05, "num_leaves": 63, "min_data_in_leaf": 200,
            "feature_fraction": 0.8, "verbose": -1, "seed": SEED}
     for k in range(3):
@@ -145,7 +149,7 @@ def main():
     n_pos, n_neg = pos.sum(), (~pos).sum()
     auc = (ranks[pos].sum() - n_pos * (n_pos - 1) / 2) / (n_pos * n_neg)
     print(f"\n=== {c}: adversary test-vs-validation predicted pairs: AUC {auc:.4f} (0.5 = same) ===")
-    top = sorted(zip(FEATURES, imp), key=lambda t: -t[1])[:12]
+    top = sorted(zip(ADV, imp), key=lambda t: -t[1])[:12]
     print("  separating features: " + ", ".join(f"{f}={v:.0f}" for f, v in top))
     both = both.with_columns(pl.Series("adv", oof))
     for thr in (0.8, 0.9, 0.95):
