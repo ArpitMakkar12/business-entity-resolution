@@ -69,6 +69,8 @@ def main():
     ap.add_argument("--blend", nargs="*", default=[],
                     help="other model dirs whose test probabilities are averaged in "
                          "(must share this model dir's test_cands.parquet)")
+    ap.add_argument("--blend-weights", nargs="*", default=[],
+                    help="weights of the main model and each --blend model (default: equal)")
     ap.add_argument("--assign", default="argmax", choices=["argmax", "strength", "explain", "joint"],
                     help="who gets a record likely for several S1: highest p (default), strongest S1, "
                          "or the S1 that explains it best (number, name+address similarity)")
@@ -131,7 +133,14 @@ def main():
             miss = scored[f"p{i}"].null_count()
             log(f"blend: + {d} ({other.height:,} pairs, {miss:,} candidates missing there)")
             cols.append(f"p{i}")
-        scored = scored.with_columns(pl.mean_horizontal(cols).alias("p")).drop(cols[1:])
+        if args.blend_weights:
+            ws = [float(x) for x in args.blend_weights]
+            assert len(ws) == len(cols), "--blend-weights needs one weight per model (main first)"
+            num = sum(pl.col(c).fill_null(pl.col("p")) * w for c, w in zip(cols, ws))
+            scored = scored.with_columns((num / sum(ws)).alias("p")).drop(cols[1:])
+            log(f"blend weights {ws}")
+        else:
+            scored = scored.with_columns(pl.mean_horizontal(cols).alias("p")).drop(cols[1:])
 
     rule = params["decision"] if args.tau is None else {"rule": "threshold", "tau": args.tau}
     log(f"decision rule: {rule}")
