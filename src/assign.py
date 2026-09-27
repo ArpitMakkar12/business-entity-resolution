@@ -95,3 +95,54 @@ def reassign(scored: pl.DataFrame, s1: pl.DataFrame, pool: pl.DataFrame, tau: fl
         log(f"  examples of changed owners -> {examples_path}")
     cols = scored.columns
     return pl.concat([single.select(cols), win.select(cols)])
+
+
+def joint_probability(scored: pl.DataFrame, s1: pl.DataFrame, pool: pl.DataFrame, tau: float,
+                      log=print, examples_path=None, p_floor: float = 0.05) -> pl.DataFrame:
+    """Exclusivity-aware probabilities.
+
+    The pair model scores every (S1, record) pair on its own, so a record that
+    fits two S1 entities well gets e.g. p = 0.99 for both, although at most one
+    of them can own it (exclusivity holds exactly in the training data). If the
+    pair probabilities are treated as independent evidence and exactly zero or
+    one claimant owns the record, the probability that S1 i owns it is
+
+        q_i = o_i / (1 + sum_j o_j),   o = p / (1 - p)   (odds)
+
+    For a single claimant q = p, so everything validated so far is unchanged.
+    Two near-certain claimants (0.99 / 0.98) give q = 0.66 / 0.33, and for the
+    F0.5 metric it is better not to predict such a coin flip at all; a clear
+    winner (0.99 vs 0.75) keeps q = 0.96. Validation cannot show this effect
+    because only a sample of training S1 records competes there.
+    """
+    eps = 1e-6
+    d = scored.with_columns(pl.col("p").clip(eps, 1 - eps).alias("_pc"))
+    d = d.with_columns(pl.when(pl.col("_pc") >= p_floor)
+                       .then(pl.col("_pc") / (1 - pl.col("_pc"))).otherwise(0.0).alias("_odds"))
+    d = d.with_columns((pl.col("_odds") / (1 + pl.col("_odds").sum().over("cand_id"))).alias("_q"),
+                       pl.len().over("cand_id").alias("_n"))
+    d = d.with_columns(pl.when(pl.col("_pc") >= p_floor).then(pl.col("_q")).otherwise(pl.col("p")).alias("_q"))
+    before = d.filter((pl.col("p") >= tau) & (pl.col("p") == pl.col("p").max().over("cand_id")))
+    dropped = before.filter(pl.col("_q") < tau)
+    log(f"joint probability: {dropped.height:,} of {before.height:,} winning pairs fall below tau {tau} "
+        f"(records that fit several S1 entities about equally)")
+    if "country" in dropped.columns:
+        log("  by country: " + str(dict(dropped.group_by("country").len().sort("country").iter_rows())))
+    if examples_path is not None and dropped.height:
+        rival = (d.filter(pl.col("p") >= tau).sort("p", descending=True)
+                 .group_by("cand_id", maintain_order=True).agg(pl.col(G).slice(1, 1).first().alias("_rival"),
+                                                               pl.col("p").slice(1, 1).first().alias("rival_p")))
+        names = s1.select(pl.col("entity_id"), "business_name", "business_address")
+        ex = (dropped.sample(n=min(300, dropped.height), seed=1).join(rival, on="cand_id", how="left")
+              .join(names.rename({"entity_id": G, "business_name": "owner_name", "business_address": "owner_addr"}),
+                    on=G)
+              .join(names.rename({"entity_id": "_rival", "business_name": "rival_name",
+                                  "business_address": "rival_addr"}), on="_rival", how="left")
+              .join(pool.select(pl.col("entity_id").alias("cand_id"), pl.col("business_name").alias("record_name"),
+                                pl.col("business_address").alias("record_addr")), on="cand_id")
+              .select("country", "record_name", "record_addr", "owner_name", "owner_addr",
+                      pl.col("p").round(4).alias("owner_p"), "rival_name", "rival_addr",
+                      pl.col("rival_p").round(4), pl.col("_q").round(3).alias("q")))
+        ex.write_csv(examples_path, separator="\t")
+        log(f"  examples of dropped pairs -> {examples_path}")
+    return d.with_columns(pl.col("_q").alias("p")).drop("_pc", "_odds", "_q", "_n")

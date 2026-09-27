@@ -69,7 +69,7 @@ def main():
     ap.add_argument("--blend", nargs="*", default=[],
                     help="other model dirs whose test probabilities are averaged in "
                          "(must share this model dir's test_cands.parquet)")
-    ap.add_argument("--assign", default="argmax", choices=["argmax", "strength", "explain"],
+    ap.add_argument("--assign", default="argmax", choices=["argmax", "strength", "explain", "joint"],
                     help="who gets a record likely for several S1: highest p (default), strongest S1, "
                          "or the S1 that explains it best (number, name+address similarity)")
     ap.add_argument("--assign-margin", type=float, default=1.0,
@@ -142,7 +142,11 @@ def main():
         log(f"PROBE: no matches predicted for {args.blank_country}")
         scored = scored.filter(~pl.col("country").is_in(args.blank_country))
     s1_ids = s1["entity_id"]
-    if args.assign != "argmax" and rule.get("rule") == "threshold":
+    if args.assign == "joint" and rule.get("rule") == "threshold":
+        from src.assign import joint_probability
+        scored = joint_probability(scored, s1, pool, rule["tau"], log=log,
+                                   examples_path=out / "joint_dropped_examples.tsv")
+    elif args.assign != "argmax" and rule.get("rule") == "threshold":
         from src.assign import reassign
         scored = reassign(scored, s1, pool, rule["tau"], args.assign, args.assign_margin, log=log,
                           examples_path=out / "reassigned_examples.tsv")
