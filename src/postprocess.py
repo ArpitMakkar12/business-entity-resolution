@@ -46,6 +46,12 @@ VARIANTS = {
     "near100": {"p_max": -1.0, "group": False, "near": 100, "near_p": 2.0},
     "near30_p99": {"p_max": -1.0, "group": False, "near": 30, "near_p": 0.99},
     "near30_or_p95": {"p_max": 0.95, "group": False, "near": 30, "near_p": 2.0},
+    # "no real match" rules: when EVERY likely match of an S1 (p >= 0.5 after the
+    # p90 rule) carries a different house number from the S1, the S1 is probably an
+    # entity without copies whose only look-alikes are a sibling business -> no match
+    "p90_allconf": {"p_max": 0.90, "group": False, "allconf": 2.0},
+    "p90_allnear": {"p_max": 0.90, "group": False, "allconf": 2.0, "allconf_near": 30},
+    "p90_allconf_p99": {"p_max": 0.90, "group": False, "allconf": 0.99},
 }
 
 
@@ -90,6 +96,14 @@ def apply_post(scored: pl.DataFrame, s1_nums: pl.DataFrame, pool_nums: pl.DataFr
     if cfg.get("sibling"):
         fire = fire | (pl.col("conflict") & pl.col("grp_has_match") & (pl.col("num_cluster") >= 2))
     hi = hi.with_columns(pl.when(fire).then(0.0).otherwise(pl.col("p")).alias("p"))
+    if cfg.get("allconf"):
+        likely = pl.col("p") >= 0.5
+        bad = pl.col("conflict") & (pl.col("p") < cfg["allconf"])
+        if cfg.get("allconf_near"):
+            bad = bad & pl.col("num_delta").is_between(1, cfg["allconf_near"]).fill_null(False)
+        hi = hi.with_columns(
+            (likely.any().over(G) & (~likely | bad).all().over(G)).alias("_blank"))
+        hi = hi.with_columns(pl.when(pl.col("_blank")).then(0.0).otherwise(pl.col("p")).alias("p"))
     return pl.concat([hi.select(scored.columns), lo.select(scored.columns)])
 
 

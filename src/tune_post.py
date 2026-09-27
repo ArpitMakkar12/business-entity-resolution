@@ -42,6 +42,7 @@ def main():
     ap.add_argument("--data-dir", default=None)
     ap.add_argument("--n-train", type=int, default=300_000)
     ap.add_argument("--n-valid", type=int, default=100_000)
+    ap.add_argument("--variants", nargs="*", default=None, help="subset of VARIANTS to compare")
     args = ap.parse_args()
     mdir, ndir = Path(args.model_dir), Path(args.norm_dir)
     params = json.loads((mdir / "params.json").read_text())["decision"]
@@ -68,27 +69,34 @@ def main():
     base_va = decide(va_scored, params).join(va_scored.select(G, "cand_id", "y"), on=[G, "cand_id"])
     base_te = decide(te_scored, params)
     rows = []
-    for name in VARIANTS:
+    for name in (args.variants or VARIANTS):
         vs = apply_post(va_scored, va_s1n, va_pooln, name)
         sel = decide(vs, params).join(va_scored.select(G, "cand_id", "y"), on=[G, "cand_id"])
         f = f05_macro(to_lists(sel.select(G, "cand_id"), truth[G].to_list()), truth)
         removed = base_va.join(sel, on=[G, "cand_id"], how="anti")
         ts = apply_post(te_scored, te_s1n, te_pooln, name)
         tsel = decide(ts, params)
-        per = (te_s1.join(tsel.group_by(G).len(), on=G, how="left").fill_null(0)
-               .group_by("country").agg(pl.col("len").mean().round(3)))
-        per = {c: v for c, v in per.iter_rows()}
+        per_t = (te_s1.join(tsel.group_by(G).len(), on=G, how="left").fill_null(0)
+                 .group_by("country").agg(pl.col("len").mean().round(3),
+                                          (pl.col("len") == 0).mean().round(4).alias("empty")))
+        per = {c: v for c, v, _ in per_t.iter_rows()}
+        emp = {c: e for c, _, e in per_t.iter_rows()}
+        va_empty = 1 - sel.filter(pl.col(G).is_in(truth[G].implode()))[G].n_unique() / truth.height
         rows.append({"variant": name, "valid_f05": round(f, 5),
                      "valid_removed_true": int(removed["y"].sum()),
                      "valid_removed_false": int((removed["y"] == 0).sum()),
                      "test_removed": base_te.height - tsel.height,
                      "test_US": per.get("US"), "test_India": per.get("India"),
-                     "test_France": per.get("France")})
+                     "test_France": per.get("France"),
+                     "valid_empty": round(va_empty, 4),
+                     "test_empty_US": emp.get("US"), "test_empty_India": emp.get("India"),
+                     "test_empty_France": emp.get("France")})
         print(rows[-1], flush=True)
     with pl.Config(tbl_rows=20, tbl_width_chars=220):
         print(pl.DataFrame(rows))
     print("\nValidation predicted matches per S1 (for comparison):",
-          round(base_va.height / truth.height, 3))
+          round(base_va.height / truth.height, 3),
+          "| validation S1 with no true match:", round((truth["n_matches"] == 0).mean(), 4))
 
 
 if __name__ == "__main__":
