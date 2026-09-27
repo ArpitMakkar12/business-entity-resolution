@@ -66,6 +66,9 @@ def main():
                     help="override the tuned rule with a plain probability threshold")
     ap.add_argument("--post", default="none",
                     help="house-number conflict rule from src.postprocess.VARIANTS (e.g. group)")
+    ap.add_argument("--blend", nargs="*", default=[],
+                    help="other model dirs whose test probabilities are averaged in "
+                         "(must share this model dir's test_cands.parquet)")
     ap.add_argument("--blank-country", nargs="*", default=[],
                     help="PROBE ONLY: predict no matches for these countries (measures their score)")
     args = ap.parse_args()
@@ -103,6 +106,18 @@ def main():
                 pl.Series("p", model.predict(f.select(FEATURES).to_numpy()))))
         pl.concat(parts).write_parquet(scored_path)
     scored = pl.read_parquet(scored_path)
+    if args.blend:
+        # average the probabilities of models trained on different samples; the other
+        # model dirs must hold test_scored.parquet computed on the SAME test_cands.parquet
+        cols = ["p"]
+        for i, d in enumerate(args.blend, 1):
+            other = pl.read_parquet(Path(d) / "test_scored.parquet").select(
+                G, "cand_id", pl.col("p").alias(f"p{i}"))
+            scored = scored.join(other, on=[G, "cand_id"], how="left")
+            miss = scored[f"p{i}"].null_count()
+            log(f"blend: + {d} ({other.height:,} pairs, {miss:,} candidates missing there)")
+            cols.append(f"p{i}")
+        scored = scored.with_columns(pl.mean_horizontal(cols).alias("p")).drop(cols[1:])
 
     rule = params["decision"] if args.tau is None else {"rule": "threshold", "tau": args.tau}
     log(f"decision rule: {rule}")
