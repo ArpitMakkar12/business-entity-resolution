@@ -74,6 +74,8 @@ def main():
                          "or the S1 that explains it best (number, name+address similarity)")
     ap.add_argument("--assign-margin", type=float, default=1.0,
                     help="reassignment only among claimants within this margin of the best p")
+    ap.add_argument("--tau-country", nargs="*", default=[],
+                    help="per-country thresholds, e.g. India=0.6 France=0.65")
     ap.add_argument("--blank-kmax", type=int, default=None,
                     help="no-match rule: S1 with at most this many predicted matches ...")
     ap.add_argument("--blank-pmax", type=float, default=2.0, help="... whose best probability is below this")
@@ -150,6 +152,18 @@ def main():
         from src.assign import reassign
         scored = reassign(scored, s1, pool, rule["tau"], args.assign, args.assign_margin, log=log,
                           examples_path=out / "reassigned_examples.tsv")
+    if args.tau_country and rule.get("rule") == "threshold":
+        # per-country threshold as a monotone remap of that country's probabilities onto
+        # the global threshold (records never cross countries, so exclusivity is unchanged)
+        t = rule["tau"]
+        for spec in args.tau_country:
+            cn, tc = spec.split("=")
+            tc = float(tc)
+            m = pl.col("country") == cn
+            remap = (pl.when(pl.col("p") < tc).then(pl.col("p") * t / tc)
+                     .otherwise(t + (pl.col("p") - tc) * (1 - t) / (1 - tc)))
+            scored = scored.with_columns(pl.when(m).then(remap).otherwise(pl.col("p")).alias("p"))
+            log(f"threshold for {cn}: {tc} (others {t})")
     sel = decide(scored, rule)
     if args.blank_kmax is not None:
         # "no real match" rule: drop every prediction of S1 entities whose predicted set
