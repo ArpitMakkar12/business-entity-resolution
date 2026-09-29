@@ -2,25 +2,42 @@
 
 **Team Data Whisperers** (VIT-AP University): Keshav Sharma, Akash Pandey, Syed Wahid, Arpit Makkar
 
-For every Source 1 (S1) business record, find all records of the same business in
-Source 2 and Source 3 (S2/S3). The records are noisy (typos, reordered and
-transliterated names, moved legal forms, Indic scripts, partial addresses), and
-the test set is full of look-alike "sibling" businesses: the same street, a
-neighbouring house number and a name that differs in one word.
+A complete entity-resolution pipeline built in the 72-hour Amazon ML Challenge 2026
+(25–27 September 2026). For every business record in Source 1 it finds all records of
+the same business in Source 2 and Source 3, across roughly 24 million noisy,
+multilingual records from India, the US and France. It uses only the provided data, runs
+fully offline and uses no pretrained models.
 
 | | |
 |---|---|
-| **Final public leaderboard score (macro F0.5)** | **0.962332** (submission 17, from 0.7186 at submission 1) |
-| Validation macro F0.5 (100,000 held-out S1 entities) | 0.9773 (model A), 0.9782 (model B) |
-| Test candidate pairs | 53,832,938 (31.1 per S1 entity, reduction ratio 0.999992) |
-| Data used | only the provided training and test files, fully offline |
-| Models | two LightGBM classifiers (MIT licence), no pretrained models |
-
-The methodology write-up is in `Documentation_template.md`.
+| **Final public leaderboard score** (macro F0.5) | **0.962332**, up from 0.7186 on the first submission, over 17 submissions |
+| Validation macro F0.5 (100,000 held-out entities) | 0.9773 (model A) and 0.9782 (model B) |
+| Test candidate pairs | 53.8 M for 1.73 M entities (31.1 per entity, reduction ratio 0.999992) |
+| Models | two LightGBM classifiers (MIT licence) over 61 hand-built features |
+| Runtime | about 3.5 h end to end on one 12-core Colab machine, no GPU |
 
 ---
 
-## Pipeline
+## The problem
+
+Each business appears once, cleanly, in Source 1 and several times, noisily, in
+Sources 2 and 3:
+
+- typos, reordered words and names moved into DBA/"f/k/a" aliases
+- legal forms moved, duplicated or changed (Pvt Ltd / Private Limited / LLP, SARL / SAS)
+- about 23% of India names written in Devanagari, Kannada, Telugu, Tamil, Gujarati or
+  Bengali script
+- partial, reordered or empty addresses, and house numbers that are dropped or zero-padded
+- France, which appears only in the test set
+
+The hardest part is the **look-alike "sibling" businesses** in the test set: the same
+street, a neighbouring house number, and a name that differs by one word or its legal
+form. The metric is macro F0.5 per Source 1 entity, which weights precision twice as much
+as recall, so every wrong merge is expensive.
+
+---
+
+## Approach
 
 ```
  S1, S2, S3 (.tsv)
@@ -47,23 +64,57 @@ The methodology write-up is in `Documentation_template.md`.
                    with synthetic sibling negatives; probabilities averaged
       │
       ▼
- 6. decision       house-number conflict rule (p < 0.90), exclusivity-aware joint
-                   probability, one record -> one S1, threshold 0.7
+ 6. decision       house-number conflict rule, exclusivity-aware joint probability,
+                   one record -> one S1, threshold 0.7
       │                                              -> matching_results.tsv
-      ▼
- official validator (tools/validate_submission.py)
 ```
 
-### What made the difference
+### Key ideas
 
-| Step | Leaderboard effect |
+1. **Measure blocking before tuning anything.** `src/block_eval.py` measures candidate
+   recall against the *full* training pool. It exposed a polars 1.35 bug that mis-read
+   list columns of sliced frames and had built blocking keys from the wrong rows. Fixing
+   it took the score from 0.72 to 0.93.
+2. **Synthetic sibling negatives** (`src/siblings.py`). The training data rarely contains
+   the look-alike businesses of the test set. So we made them from the training data:
+   copies of true matches with a shifted house number and a changed legal form or filler
+   word, added to the training pool as non-matches for 90% of entities.
+3. **Rules that target the test distractors.** A house-number conflict rule, and an
+   **exclusivity-aware joint probability** (`src/assign.py`): a record can belong to at
+   most one entity, so a record that fits two entities about equally well is predicted for
+   neither.
+4. **Reverse search** in blocking (preset `v17`). Every S2/S3 record also proposes its best
+   Source 1 entities. This recovered true copies that had been crowded out of their own
+   entity's candidate list by look-alike records.
+5. **Averaging two models** trained on different samples.
+
+### What moved the leaderboard
+
+| Change | Effect |
 |---|---|
-| Blocking rebuilt and verified against the full training pool (it also exposed a polars 1.35 list-slicing bug that had built keys from the wrong rows) | 0.7186 → 0.9256 |
-| House-number conflict rule against sibling businesses | +0.022 |
-| **Synthetic sibling negatives** (`src/siblings.py`): copies of true matches with a shifted house number and a changed legal form or filler word, injected into the training pool as non-matches | +0.006, and +0.0018 more when raised from 40% to 90% of entities |
-| Averaging two models trained on different samples | +0.0002 |
-| **Joint (exclusivity-aware) probability** (`src/assign.py`): a record that fits two S1 entities about equally is not predicted for either | +0.0003 |
-| **Reverse search** (blocking preset `v17`): recovers true copies crowded out of their entity's candidate list | +0.0012 |
+| Blocking rebuilt and checked against the full training pool (polars bug fixed) | 0.7186 → 0.9256 |
+| House-number conflict rule | +0.022 |
+| Synthetic sibling negatives (40% of entities, then 90%) | +0.006, then +0.0018 |
+| Averaging two models | +0.0002 |
+| Exclusivity-aware joint probability | +0.0003 |
+| Reverse search in blocking | +0.0012 |
+
+**What did not transfer to the leaderboard**, although some of it helped on validation:
+group-consistency re-scoring (`src/stage2.py`), more training data alone, stricter
+thresholds, stricter conflict rules, and stripping honorifics such as "Shri" or "Dr"
+(`src/patch_names.py`).
+
+### Lessons learned
+
+- **Validation must reproduce the test set's distractors.** Until our training pool held
+  about as many look-alike businesses per entity as the test pool, validation overestimated
+  the leaderboard by 0.05.
+- **Check every change on validation before spending a submission on it.** Two tempting
+  ideas (reassigning contested records by name similarity, and stripping honorifics) looked
+  right on examples but were worse when measured.
+- **Leaderboard probes can locate the problem.** Blanking one country per submission showed
+  that most of the remaining gap was in India, and was not in the parts of the pipeline we
+  were still tuning.
 
 ---
 
@@ -76,21 +127,20 @@ pip install -r requirements.txt
 ```
 
 Versions are pinned in `requirements.txt` (polars 1.44.2, rapidfuzz 3.14.6,
-lightgbm 4.7.0). **Do not use polars 1.35.x**: it mis-reads list columns of sliced
-frames.
+lightgbm 4.7.0). **Do not use polars 1.35.x.**
 
-Data layout (the challenge's `dataset/` folder):
+**Data.** The challenge data belongs to the organisers and is not part of this
+repository. The code expects the challenge's `dataset/` folder:
 
 ```
 <BER_DATA_DIR>/train/train_source{1,2,3}.tsv, train_ground_truth.tsv
 <BER_DATA_DIR>/test/test_source{1,2,3}.tsv
 ```
 
-All paths are set through environment variables: `BER_DATA_DIR` (default
-`./dataset`), `BER_WORK_DIR` (intermediate files, default `./work`) and
-`BER_OUTPUT_DIR`. `BER_N_JOBS` sets the number of threads. On Google Colab,
-`notebooks/00_colab_bootstrap.ipynb` mounts Drive, copies the data, fetches the
-code and installs the dependencies.
+Paths are set with environment variables: `BER_DATA_DIR` (default `./dataset`),
+`BER_WORK_DIR` (intermediate files, default `./work`) and `BER_OUTPUT_DIR`. `BER_N_JOBS`
+sets the number of threads. On Google Colab, `notebooks/00_colab_bootstrap.ipynb` mounts
+Drive, copies the data, fetches the code and installs the dependencies.
 
 ---
 
@@ -123,14 +173,14 @@ python -m src.predict --model-dir work/model_v4r --post conflict_p90 --out-dir w
 
 # 6. final: average of A and B, conflict rule, joint probability, threshold 0.7 (~3 min)
 python -m src.predict --model-dir work/model_v3r --blend work/model_v4r \
-       --post conflict_p90 --assign joint \
-       --out-dir output --validator tools/validate_submission.py
+       --post conflict_p90 --assign joint --out-dir output
 ```
 
-The result is `output/matching_results.tsv` (5,588,460 predicted matches; 6.07%
-of S1 entities without a match) and `output/candidate_pairs.tsv`. Cached stages
-(`test_cands.parquet`, `test_scored.parquet`, `train_feats.parquet`, ...) are
-reused on re-runs; add `--force` to recompute them.
+The result is `output/matching_results.tsv` (5,588,460 predicted matches; 6.07% of
+entities without a match) and `output/candidate_pairs.tsv`. Cached stages
+(`test_cands.parquet`, `test_scored.parquet`, `train_feats.parquet`, ...) are reused on
+re-runs; add `--force` to recompute them. To check the files with the organisers'
+validator, add `--validator tools/validate_submission.py`.
 
 ### Useful `src.predict` options
 
@@ -142,7 +192,7 @@ reused on re-runs; add `--force` to recompute them.
 | `--assign joint` | exclusivity-aware joint probability (`strength` / `explain` also exist) |
 | `--tau T`, `--tau-country India=0.6 ...` | global / per-country threshold |
 | `--rescore` | recompute features and scores, reuse candidates |
-| `--blank-country C` | probe only: predict no matches for a country (measures its score on the leaderboard) |
+| `--blank-country C` | leaderboard probe: predict no matches for one country |
 
 ---
 
@@ -162,49 +212,48 @@ src/
   features.py        61 pair features (rapidfuzz, polars)
   train.py           aliases -> siblings -> blocking -> features -> LightGBM -> decision tuning
   predict.py         test blocking -> features -> scoring -> blend -> post rule ->
-                     assignment -> decision -> output files + official validator
+                     assignment -> decision -> output files (+ optional validator)
   decision.py        exclusivity, threshold / expected-F0.5 rules, official metric (macro F0.5)
   postprocess.py     house-number conflict rules against sibling-business false merges
-  assign.py          joint (exclusivity-aware) probability and owner reassignment of
-                     records that fit several S1 entities
+  assign.py          exclusivity-aware joint probability; owner reassignment variants
 
-  # evaluation and diagnostics (training labels or test predictions only)
+  # evaluation and diagnostics
   block_eval.py      blocking recall / cost of configurations on the full training pool
   error_analysis.py  where validation F0.5 is lost, with examples
   tune_post.py       validation cost and test effect of each post-processing rule
-  eval_joint.py      joint probability on validation with realistic S1 competition
+  eval_joint.py      joint probability on validation with realistic competition
   eval_blend.py      blend weight / threshold / rules on entities held out for both models
   audit.py           test-vs-validation prediction audit with examples
   audit_country.py   per-country examples of odd matches, misses and near misses
   diag_s1.py         look-alike entities inside Source 1, train vs test
   diag_k.py          test vs validation by type of predicted set
-  diag_contest.py    records claimed by several S1 entities on test
+  diag_contest.py    records claimed by several entities on test
   diag_shift.py      adversarial check: do test predictions differ from validation ones?
   diag_unclaimed.py  probability bands and unclaimed test records
   diag_tokens.py     name words more frequent on test than on train
 
   # tried, not used in the final submission
-  stage2.py          group-consistency re-scoring (validation +0.0006, no leaderboard gain)
-  patch_names.py     honorific stripping ("Shri", "Sri", ...) (validation -0.0001)
+  stage2.py          group-consistency re-scoring
+  patch_names.py     honorific stripping
 
 tests/
   test_normalize.py  regression tests on real noise patterns
   make_synthetic.py  small synthetic dataset for smoke tests (with sibling distractors)
   eval_synthetic.py  scores a synthetic run against its hidden test truth
-tools/
-  validate_submission.py  organisers' validator (unchanged copy)
+tools/               organisers' submission validator (copied from the challenge resources)
 notebooks/
   00_colab_bootstrap.ipynb  Colab setup: Drive, data, code, dependencies
+Documentation_template.md   methodology write-up submitted with the solution
 ```
 
-Smoke test on synthetic data (seconds):
+Smoke test on synthetic data (seconds, no challenge data needed):
 
 ```bash
 python -m tests.make_synthetic --out /tmp/synth
 export BER_DATA_DIR=/tmp/synth BER_WORK_DIR=/tmp/synth_work
 python -m src.normalize && python -m tests.test_normalize
 python -m src.train --n-train 3000 --n-valid 1500 --blocking v16 --siblings 0.9
-python -m src.predict --post conflict_p90 --assign joint --validator tools/validate_submission.py
+python -m src.predict --post conflict_p90 --assign joint
 python -m tests.eval_synthetic /tmp/synth/test_truth_hidden.tsv /tmp/synth_work/output/matching_results.tsv
 ```
 
@@ -228,26 +277,24 @@ python -m tests.eval_synthetic /tmp/synth/test_truth_hidden.tsv /tmp/synth_work/
 | 12 | Model B: 700k training entities | 0.9600 |
 | 13 | Average of models A and B | 0.9608 |
 | 14–15 | Probes: France / India predicted empty (per-country diagnosis) | 0.829 / 0.579 |
-| 16 | 13 + joint (exclusivity-aware) probability | 0.9611 |
+| 16 | 13 + exclusivity-aware joint probability | 0.9611 |
 | **17** | **16 with reverse search in both models (blocking v17)** | **0.9623** |
-
-What did not transfer to the leaderboard, although some of it helped on
-validation: stage-2 re-scoring, more training data alone, stricter thresholds,
-stricter conflict rules, stripping honorifics. The lesson from the whole
-challenge: validation has to reproduce the test set's distractors, and only
-changes aimed at those (blocking recall, sibling negatives, conflict and joint
-rules) moved the score.
 
 ---
 
 ## Compliance
 
-- Only the provided training and test files are used. No external databases,
-  APIs, geocoding, gazetteers or internet lookups at any stage; after
-  `pip install` the pipeline runs fully offline.
+- Only the provided training and test files are used. No external databases, APIs,
+  geocoding, gazetteers or internet lookups at any stage; after `pip install` the pipeline
+  runs fully offline.
 - Normalisation vocabularies (legal forms, street types, state names) are short
-  hand-written lists in the code. Aliases and synthetic siblings are derived from
-  the training data only.
+  hand-written lists in the code. Aliases and synthetic siblings are derived from the
+  training data only.
 - No pretrained or large language models. Libraries: LightGBM (MIT), polars (MIT),
   rapidfuzz (MIT), NumPy (BSD), psutil (BSD), tqdm (MIT / MPL-2.0).
 - `.gitignore` keeps the challenge data and all intermediate files out of the repository.
+
+## Acknowledgements
+
+Thanks to the Amazon ML Challenge 2026 organisers and Unstop for the problem, the data
+and the evaluation platform.
